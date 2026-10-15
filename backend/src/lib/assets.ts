@@ -46,3 +46,19 @@ export function toBaseUnits(amount: number | string, decimals: number): bigint {
   const raw = BigInt(`${whole || "0"}${padded}`);
   return negative ? -raw : raw;
 }
+
+/**
+ * The inverse of `toBaseUnits`, as a string for `Decimal` columns (Prisma
+ * accepts a numeric string for a `Decimal` field, and a string cannot lose
+ * precision the way a JS number can). Trailing zeros are trimmed, so
+ * `10_000_000n` at 7 decimals is `"1"`, not `"1.0000000"`.
+ */
+export function fromBaseUnits(base: bigint, decimals: number): string {
+  const negative = base < 0n;
+  const digits = (negative ? -base : base).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals) || "0";
+  const fraction =
+    decimals > 0 ? digits.slice(digits.length - decimals).replace(/0+$/, "") : "";
+  const value = fraction ? `${whole}.${fraction}` : whole;
+  return negative ? `-${value}` : value;
+}
