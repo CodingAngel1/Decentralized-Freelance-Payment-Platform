@@ -54,7 +54,7 @@ cd frontend && vercel deploy --prod
 
 1. **Client posts a job** — defines milestones (amount + deadline each) and funds the escrow contract.
 2. **Freelancer delivers work** — the client releases each milestone, fully or in part, as deliverables are approved.
-3. **Dispute resolution** — either party can freeze the escrow and raise a dispute; an M-of-N arbitrator panel distributes funds. If the panel stalls, a 7-day timelock unlocks an escape hatch for both parties.
+3. **Dispute resolution** — either party can freeze the escrow and raise a dispute; an M-of-N arbitrator panel distributes funds. If the panel stalls, a 7-day timelock unlocks an escape hatch — but only the client can use it.
 4. **Reputation** — both parties rate each other on-chain after completion; scores are permanent, verifiable, and weighted by job size.
 
 ## Project status
@@ -91,8 +91,9 @@ Client ── create / fund / release_milestone / release_partial / reclaim_* �
                                                                                  │  ▲
                                           arbitrate() ── resolve() ──┘  │ (dispute contract only)
 DisputeContract ◄── Arbitrator                                        │
-      │  verifies escrow is Disputed + caller is on the panel         │
-      └── submit(rater, ratee, escrow_id, score) ─► ReputationContract
+   raise(escrow_id, escrow_contract, raised_by, reason)               │
+   (verifies escrow is Disputed; caller must be a party)              │
+Client / Freelancer ── submit(rater, ratee, escrow_id, score) ──► ReputationContract
                       (verifies the job Completed + participants)
 ```
 
@@ -123,9 +124,9 @@ The events each contract emits are catalogued in [`docs/EVENTS.md`](./docs/EVENT
 | `release_milestone(escrow_id, milestone_index)` | Releases a whole milestone to the freelancer |
 | `release_partial(escrow_id, milestone_index, amount)` | Releases part of a milestone; tracks `released_amount` |
 | `open_dispute(escrow_id, initiator)` | Either participant freezes the escrow |
-| `reclaim_after_dispute_timeout(escrow_id)` | Escape hatch once the 7-day dispute timelock passes |
+| `reclaim_after_dispute_timeout(escrow_id)` | Client-only escape hatch once the 7-day dispute timelock passes |
 | `resolve(escrow_id, client_share, freelancer_share)` | Dispute-contract-only; splits the funds |
-| `reclaim_expired(escrow_id)` | Client refund after expiry with nothing released |
+| `reclaim_expired(escrow_id)` | Client-only refund of the unreleased remainder after expiry; earlier partial releases are not clawed back |
 | `get(escrow_id)` / `dispute_deadline(escrow_id)` / `dispute_contract()` | Read-only views |
 
 ### `dispute`
@@ -133,9 +134,9 @@ The events each contract emits are catalogued in [`docs/EVENTS.md`](./docs/EVENT
 | Function | Purpose |
 |----------|---------|
 | `init(arbitrators, threshold)` | One-shot setup; validates a non-empty panel and `1 <= threshold <= len` |
-| `raise(escrow_id, initiator)` | Verifies the escrow is `Disputed` and the caller is a party |
-| `approve(dispute_id, arbitrator, client_share, freelancer_share)` | A panel vote; shares must sum to the escrowed total |
-| `arbitrate(dispute_id)` | Executes the split once approvals reach the threshold |
+| `raise(escrow_id, escrow_contract, raised_by, reason)` | Records the dispute and returns its id; cross-checks that the escrow is `Disputed` and `raised_by` is a party |
+| `approve(dispute_id, arbitrator, client_share, freelancer_share)` | Panel-only vote on a split; rejects negative shares only — the sum must equal the funds held, enforced later by `escrow.resolve` |
+| `arbitrate(dispute_id, client_share, freelancer_share)` | Executes the split once approvals *for that exact split* reach the threshold; cross-calls `escrow.resolve` |
 | `get(dispute_id)` / `dispute_for(escrow_id)` / `arbitrators()` / `threshold()` | Read-only views |
 
 ### `reputation`
@@ -147,7 +148,13 @@ The events each contract emits are catalogued in [`docs/EVENTS.md`](./docs/EVENT
 | `get_aggregate(address)` | Amount-weighted `{ total_score, weight, count }` |
 | `get_rating(rater, escrow_id)` | A single rating |
 
-Full signatures, error codes, and the contract reference table are in
+These tables are a summary; **the code is canonical** — `contracts/*/src/lib.rs`
+is the source of truth, and this table set and the one in
+[`CONTRIBUTING.md`](./CONTRIBUTING.md) must both match it. If a table and the
+code ever disagree, trust the code and fix the table: the PR checklist
+(`.github/pull_request_template.md`) asks every PR to re-verify both copies.
+
+Full signatures and error codes are in
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## Backend API
@@ -195,7 +202,7 @@ React + TypeScript + Vite, with Freighter for signing.
 | `/` | `Dashboard` | Filterable, paginated job list from the API |
 | `/post` | `PostJob` | Milestones + asset picker → on-chain create/fund, then the off-chain record |
 | `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
-| `/profile/:address` | `Profile` | On-chain reputation and job history |
+| `/profile/:address` | `Profile` | On-chain reputation aggregate (weighted average + rating count) |
 
 Every write shows the transaction hash and a stellar.expert link, contract errors
 are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target

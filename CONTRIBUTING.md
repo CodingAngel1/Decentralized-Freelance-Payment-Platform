@@ -125,10 +125,9 @@ Freelancer ───────────────────────
    │                                    raise() ── verify ──────►│  (escrow must be Disputed;
    │                                              ── cross-call ──┘   caller must be a party)
 DisputeContract ◄── approve()* ── Arbitrator panel
-   │                  arbitrate() (needs M-of-N approvals)
-   │
-   │  submit(rater, ratee, escrow_id, score) ── verify completed + participants
-   └──────────────────────────────────────────────► ReputationContract
+                      arbitrate() (needs M-of-N approvals)
+
+Client / Freelancer ── submit(rater, ratee, escrow_id, score) ── verify completed + participants ──► ReputationContract
 ```
 
 State machine (escrow):
@@ -149,12 +148,15 @@ Details of the dispute panel and timelock are in
 | Contract | Function | Notes |
 |----------|----------|-------|
 | escrow | `init(admin, dispute_contract)` | one-time; admin can rotate the dispute contract |
+| escrow | `set_dispute_contract(dispute_contract)` | admin-only; rotates the dispute contract |
 | escrow | `create(client, freelancer, token, milestones, expiry)` | validates amounts/expiry; returns id |
+| escrow | `update_milestones(escrow_id, milestones)` | client-only, while still `Created` (before funding); re-validates and recomputes the total |
 | escrow | `fund(escrow_id)` | client deposits the total |
-| escrow | `release_milestone(escrow_id, index)` | client-only; completes the job on the last one |
+| escrow | `release_milestone(escrow_id, milestone_index)` | client-only; completes the job on the last one |
+| escrow | `release_partial(escrow_id, milestone_index, amount)` | client-only; pays part of a milestone and tracks `released_amount` |
 | escrow | `open_dispute(escrow_id, initiator)` | either party; freezes the escrow and starts the dispute timelock |
 | escrow | `resolve(escrow_id, client_share, freelancer_share)` | **dispute contract only**; shares must sum to the funds held |
-| escrow | `reclaim_expired(escrow_id)` | client refund after expiry |
+| escrow | `reclaim_expired(escrow_id)` | client-only refund of the unreleased remainder after expiry; earlier releases are not clawed back |
 | escrow | `reclaim_after_dispute_timeout(escrow_id)` | client refund from `Disputed` once the dispute deadline passes |
 | escrow | `get(escrow_id)` / `dispute_contract()` / `dispute_deadline(escrow_id)` | views |
 | dispute | `init(arbitrators, threshold)` | one-time; every panel member authorizes |
@@ -165,6 +167,11 @@ Details of the dispute panel and timelock are in
 | reputation | `init(admin, escrow_contract)` | one-time |
 | reputation | `submit(rater, ratee, escrow_id, score)` | verified against escrow; 1–5 |
 | reputation | `get_aggregate(address)` / `get_rating(rater, escrow_id)` | views; aggregate is amount-weighted (see `docs/REPUTATION.md`) |
+
+The code is canonical: `contracts/*/src/lib.rs` is the source of truth for this
+table and for the one in `README.md`. If a table and the code disagree, trust the
+code and update the table — the PR checklist asks every PR to re-verify both
+copies against the contract source.
 
 All fallible functions return a typed `Result<_, _Error>` (see the `interface`
 crate for `EscrowError`). **No `assert!`/`unwrap` in production paths.**

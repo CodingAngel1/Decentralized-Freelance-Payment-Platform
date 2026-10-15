@@ -23,6 +23,7 @@ Closes #
 - [ ] Frontend: `cd frontend && npm run lint && npx tsc --noEmit && npm run build`
 - [ ] New contract functions have tests for both success and failure paths
 - [ ] Behaviour changes are reflected in `README.md` / `CONTRIBUTING.md`
+- [ ] Contract reference tables in `README.md` / `CONTRIBUTING.md` still match `contracts/*/src/lib.rs` (signatures, preconditions, same function set in both)
 - [ ] No secrets committed; testnet only
 
 ## Wave complexity
