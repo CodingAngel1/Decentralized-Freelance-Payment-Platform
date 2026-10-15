@@ -5,11 +5,13 @@
  * signs with Freighter and submits directly to the network.
  * The backend never holds private keys.
  *
- * POST /api/escrow/build/create          — build escrow.create() tx
- * POST /api/escrow/build/fund            — build escrow.fund() tx
- * POST /api/escrow/build/release         — build escrow.release_milestone() tx
- * POST /api/escrow/build/reclaim         — build escrow.reclaim_expired() tx
- * POST /api/escrow/sync/:jobId           — sync on-chain escrow ID to DB job record
+ * POST /api/escrow/build/create            — build escrow.create() tx
+ * POST /api/escrow/build/fund              — build escrow.fund() tx
+ * POST /api/escrow/build/release           — build escrow.release_milestone() tx
+ * POST /api/escrow/build/reclaim           — build escrow.reclaim_expired() tx
+ * POST /api/escrow/build/update-milestones — build escrow.update_milestones() tx
+ * PUT  /api/escrow/:escrowId/milestones    — record a confirmed milestone edit
+ * POST /api/escrow/sync/:jobId             — sync on-chain escrow ID to DB job record
  */
 
 import { Router } from "express";
@@ -22,13 +24,14 @@ import {
   BASE_FEE,
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
-import { buildCreateArgs } from "../lib/escrowArgs";
+import { buildCreateArgs, buildUpdateMilestonesArgs } from "../lib/escrowArgs";
 import {
   buildFundArgs,
   buildReclaimArgs,
   buildReleaseMilestoneArgs,
 } from "../lib/scval";
 import { getAsset, toBaseUnits, UnknownAssetError } from "../lib/assets";
+import { friendlyContractError } from "../lib/contractErrors";
 import { isValidStellarAddress } from "../lib/stellarAddress";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
@@ -48,8 +51,40 @@ async function buildTx(sourceAddress: string, operation: any): Promise<string> {
     .setTimeout(30)
     .build();
   const simResult = await server.simulateTransaction(tx);
-  if ("error" in simResult) throw new AppError(400, `Simulation failed: ${simResult.error}`);
+  // A contract rejection (`Error(Contract, #N)`) is a caller mistake, not an
+  // internal failure — answer with the named error rather than a host string.
+  if ("error" in simResult) throw new AppError(400, friendlyContractError(simResult.error));
   return SorobanRpc.assembleTransaction(tx, simResult).build().toXDR();
+}
+
+/** Resolve a job's asset, turning an unknown symbol into a 400. */
+function assetForJob(assetSymbol: string) {
+  try {
+    return getAsset(assetSymbol);
+  } catch (err) {
+    if (err instanceof UnknownAssetError) throw new AppError(400, err.message);
+    throw err;
+  }
+}
+
+/**
+ * Load the job behind an escrow id and check the caller may edit its milestones.
+ *
+ * The ownership check is a cheap, readable early rejection. The *state* check is
+ * deliberately left to the contract: the chain is the authority and the mirrored
+ * `Job.status` can lag behind it, so a funded escrow fails simulation with
+ * `InvalidStatus`, which `friendlyContractError` reports as a 4xx message.
+ */
+async function loadEditableJob(escrowId: bigint, address: string) {
+  const job = await prisma.job.findUnique({
+    where: { escrowId },
+    include: { client: true },
+  });
+  if (!job) throw new AppError(404, "No job is linked to that escrow id");
+  if (job.client.stellarAddress !== address) {
+    throw new AppError(403, "Only the client can edit milestones");
+  }
+  return job;
 }
 
 // POST /api/escrow/build/create
@@ -68,13 +103,7 @@ escrowRouter.post("/build/create", requireAuth, validate(buildCreateSchema), asy
     if (job.client.stellarAddress !== res.locals.stellarAddress) throw new AppError(403, "Forbidden");
 
     // Pay in the asset the job is configured for, validated against the registry.
-    let asset;
-    try {
-      asset = getAsset(job.asset);
-    } catch (err) {
-      if (err instanceof UnknownAssetError) throw new AppError(400, err.message);
-      throw err;
-    }
+    const asset = assetForJob(job.asset);
     const tokenContractId = config[asset.configKey];
     if (!tokenContractId) {
       throw new AppError(400, `No contract configured for asset ${asset.symbol}`);
@@ -104,6 +133,111 @@ escrowRouter.post("/build/create", requireAuth, validate(buildCreateSchema), asy
     next(err);
   }
 });
+
+/** A milestone being edited, in whole units (the UI's unit), deadline optional. */
+const editableMilestoneSchema = z.object({
+  description: z.string().max(200).optional(),
+  amountUsdc: z.number().positive(),
+  deadline: z.string().datetime().optional(),
+});
+
+// POST /api/escrow/build/update-milestones
+//
+// `escrow.update_milestones(escrow_id, milestones)` replaces the whole breakdown
+// while the escrow is still unfunded. The route takes whole-unit amounts and
+// encodes them exactly like `build/create`, so both paths produce identical
+// arguments for the same edit.
+const updateMilestonesSchema = z.object({
+  escrowId: z.number().int().nonnegative(),
+  milestones: z.array(editableMilestoneSchema).min(1),
+});
+
+escrowRouter.post(
+  "/build/update-milestones",
+  requireAuth,
+  validate(updateMilestonesSchema),
+  async (req, res, next) => {
+    try {
+      const { escrowId, milestones } = req.body as z.infer<typeof updateMilestonesSchema>;
+      const job = await loadEditableJob(BigInt(escrowId), res.locals.stellarAddress);
+      const asset = assetForJob(job.asset);
+
+      const contract = new Contract(config.ESCROW_CONTRACT_ID);
+      const args = buildUpdateMilestonesArgs({
+        escrowId: BigInt(escrowId),
+        milestones: milestones.map((m) => ({
+          amount: toBaseUnits(m.amountUsdc, asset.decimals),
+          deadline: BigInt(m.deadline ? Math.floor(new Date(m.deadline).getTime() / 1000) : 0),
+        })),
+      });
+
+      const xdr = await buildTx(
+        res.locals.stellarAddress,
+        contract.call("update_milestones", ...args),
+      );
+
+      res.json({ xdr });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PUT /api/escrow/:escrowId/milestones — record an edit the chain has accepted.
+//
+// The `milestones_updated` event carries only `count` and `total_amount`, so the
+// per-milestone rows cannot be rebuilt server-side from the event. The client
+// that submitted the edit therefore sends the new breakdown here once the
+// transaction confirms, the same way `sync/:jobId` links an escrow id after
+// `create`/`fund`. The indexer still reconciles the total from the event
+// (`handleMilestonesUpdated` in indexer.ts), so an edit that is never recorded
+// still cannot leave a stale total behind.
+const recordMilestonesSchema = z.object({
+  milestones: z.array(editableMilestoneSchema).min(1),
+});
+
+escrowRouter.put(
+  "/:escrowId/milestones",
+  requireAuth,
+  validate(recordMilestonesSchema),
+  async (req, res, next) => {
+    try {
+      const escrowIdText = req.params.escrowId;
+      if (!/^\d+$/.test(escrowIdText)) throw new AppError(400, "Invalid escrow id");
+
+      const escrowId = BigInt(escrowIdText);
+      const { milestones } = req.body as z.infer<typeof recordMilestonesSchema>;
+      const job = await loadEditableJob(escrowId, res.locals.stellarAddress);
+      assetForJob(job.asset); // reject an asset the registry does not know
+
+      const totalAmountUsdc = milestones.reduce((sum, m) => sum + m.amountUsdc, 0);
+
+      // The edit replaces the breakdown, so the mirror has to replace its rows
+      // too — otherwise a shorter list leaves orphaned milestones behind.
+      const updated = await prisma.$transaction(async (tx) => {
+        await tx.milestone.deleteMany({ where: { jobId: job.id } });
+        await tx.milestone.createMany({
+          data: milestones.map((m, i) => ({
+            jobId: job.id,
+            index: i,
+            amountUsdc: m.amountUsdc,
+            description: m.description ?? `Milestone ${i + 1}`,
+            deadline: m.deadline ? new Date(m.deadline) : null,
+          })),
+        });
+        return tx.job.update({
+          where: { id: job.id },
+          data: { totalAmountUsdc },
+          include: { milestones: { orderBy: { index: "asc" } } },
+        });
+      });
+
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // POST /api/escrow/build/fund
 escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: z.number() })), async (req, res, next) => {
