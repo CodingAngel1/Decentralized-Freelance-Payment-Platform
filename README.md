@@ -199,7 +199,10 @@ React + TypeScript + Vite, with Freighter for signing.
 
 Every write shows the transaction hash and a stellar.expert link, contract errors
 are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target
-pending state stops double submits.
+pending state stops double submits. Every address on screen is copyable in one
+click and can be expanded into a QR code to scan into a wallet
+(`frontend/src/components/AddressField.tsx`) — a `G…` address is 56 characters,
+and selecting one by hand is how funds reach the wrong account.
 
 ## Stack
 

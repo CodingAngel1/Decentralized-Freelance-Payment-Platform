@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
+import AddressField from "../components/AddressField";
 import { fetchJobs, type JobApi } from "../lib/api";
 import { useWallet } from "../hooks/wallet-context";
 
@@ -69,7 +70,8 @@ export default function Dashboard() {
         </p>
       ) : (
         <p>
-          Connected as <code>{publicKey}</code>.{" "}
+          Connected as{" "}
+          <AddressField address={publicKey} label="your wallet address" truncate qr />.{" "}
           <Link to={`/profile/${publicKey}`}>View reputation</Link>
         </p>
       )}
@@ -131,9 +133,15 @@ export default function Dashboard() {
               <br />
               <span className="muted">
                 Client:{" "}
-                {job.client?.stellarAddress
-                  ? `${job.client.stellarAddress.slice(0, 6)}…${job.client.stellarAddress.slice(-4)}`
-                  : "—"}{" "}
+                {job.client?.stellarAddress ? (
+                  <AddressField
+                    address={job.client.stellarAddress}
+                    label="Client address"
+                    truncate
+                  />
+                ) : (
+                  "—"
+                )}{" "}
                 · Total: {String(job.totalAmountUsdc)} {job.asset ?? ""}
               </span>
               <br />

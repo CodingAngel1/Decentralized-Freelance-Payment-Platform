@@ -13,6 +13,7 @@
 import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { WalletProvider } from "./hooks/WalletProvider";
 import { useWallet } from "./hooks/wallet-context";
+import AddressField from "./components/AddressField";
 import Dashboard from "./pages/Dashboard";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
@@ -27,9 +28,7 @@ function Nav() {
       <span className="nav-spacer">
         {publicKey ? (
           <>
-            <code title={publicKey}>
-              {publicKey.slice(0, 6)}…{publicKey.slice(-4)}
-            </code>{" "}
+            <AddressField address={publicKey} truncate />{" "}
             <button onClick={disconnect}>Disconnect</button>
           </>
         ) : (
