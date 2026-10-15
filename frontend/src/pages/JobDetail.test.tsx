@@ -7,7 +7,9 @@ const h = vi.hoisted(() => ({
     getEscrow: vi.fn(),
     releaseMilestone: vi.fn(),
     openDispute: vi.fn(),
+    reclaimDisputed: vi.fn(),
     submitRating: vi.fn(),
+    getDisputeDeadline: vi.fn(),
     isPending: vi.fn(() => false),
     hasPendingWrite: vi.fn(() => false),
     error: null as string | null,
@@ -59,12 +61,28 @@ const COMPLETED = {
   expiry: 0n,
 };
 
+/** A disputed escrow with one milestone still unreleased. */
+const DISPUTED = {
+  ...COMPLETED,
+  status: "Disputed",
+  milestones: [
+    { amount: 20_000_000n, released: false, released_amount: 0n, deadline: 0n },
+  ],
+};
+
+/** Current unix seconds — the contract compares against its own ledger clock. */
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+
 beforeEach(() => {
   h.wallet.publicKey = CLIENT;
   h.escrow.getEscrow.mockReset();
   h.escrow.getEscrow.mockResolvedValue(COMPLETED);
   h.escrow.submitRating.mockReset();
   h.escrow.submitRating.mockResolvedValue({ hash: "HASH", result: undefined });
+  h.escrow.reclaimDisputed.mockReset();
+  h.escrow.reclaimDisputed.mockResolvedValue({ hash: "RECLAIMHASH", result: undefined });
+  h.escrow.getDisputeDeadline.mockReset();
+  h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() + 3 * 86_400));
   h.escrow.isPending.mockReset();
   h.escrow.isPending.mockReturnValue(false);
   h.escrow.hasPendingWrite.mockReset();
@@ -174,5 +192,49 @@ describe("JobDetail rating", () => {
 
     await screen.findByText("Milestones");
     expect(screen.queryByRole("button", { name: "Submit rating" })).toBeNull();
+  });
+});
+
+describe("JobDetail dispute timelock", () => {
+  it("disables the reclaim before the deadline and shows the time remaining", async () => {
+    h.escrow.getEscrow.mockResolvedValue(DISPUTED);
+    h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() + 3 * 86_400));
+
+    render(<JobDetail />);
+
+    const button = await screen.findByRole("button", { name: "Reclaim after timeout" });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Reclaimable only after/i)).toBeTruthy();
+    expect(screen.getByText(/left\)/i)).toBeTruthy();
+    expect(h.escrow.reclaimDisputed).not.toHaveBeenCalled();
+  });
+
+  it("enables the reclaim for the client once the deadline passes and submits it", async () => {
+    h.escrow.getEscrow.mockResolvedValue(DISPUTED);
+    h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() - 10));
+
+    render(<JobDetail />);
+
+    const button = await screen.findByRole("button", { name: "Reclaim after timeout" });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText(/timelock has passed/i)).toBeTruthy();
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(h.escrow.reclaimDisputed).toHaveBeenCalledWith(7n));
+    // The transaction is linked on the explorer like every other write.
+    const tx = await screen.findByRole("link", { name: /RECLAIM/ });
+    expect(tx.getAttribute("href")).toBe("https://stellar.expert/tx/RECLAIMHASH");
+  });
+
+  it("shows the frozen notice but no reclaim action to a non-client", async () => {
+    h.wallet.publicKey = FREELANCER;
+    h.escrow.getEscrow.mockResolvedValue(DISPUTED);
+    h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() - 10));
+
+    render(<JobDetail />);
+
+    await screen.findByText(/frozen pending arbitration/i);
+    expect(screen.queryByRole("button", { name: "Reclaim after timeout" })).toBeNull();
   });
 });

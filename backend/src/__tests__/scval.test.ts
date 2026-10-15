@@ -5,6 +5,7 @@ import {
   buildFundArgs,
   buildOpenDisputeArgs,
   buildReclaimArgs,
+  buildReclaimDisputeArgs,
   buildReleaseMilestoneArgs,
   buildReputationSubmitArgs,
   scAddress,
@@ -57,6 +58,12 @@ describe("route argument builders", () => {
 
   it("buildReclaimArgs: escrow_id is u64", () => {
     expect(buildReclaimArgs(7n).map(tag)).toEqual(["scvU64"]);
+  });
+
+  it("buildReclaimDisputeArgs: escrow_id is u64 for the dispute-timelock path", () => {
+    const args = buildReclaimDisputeArgs(7n);
+    expect(args.map(tag)).toEqual(["scvU64"]);
+    expect(scValToNative(args[0])).toBe(7n);
   });
 
   it("buildOpenDisputeArgs: escrow_id is u64 and initiator is an address", () => {

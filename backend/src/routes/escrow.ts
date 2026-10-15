@@ -9,6 +9,7 @@
  * POST /api/escrow/build/fund              — build escrow.fund() tx
  * POST /api/escrow/build/release           — build escrow.release_milestone() tx
  * POST /api/escrow/build/reclaim           — build escrow.reclaim_expired() tx
+ * POST /api/escrow/build/reclaim-dispute   — build escrow.reclaim_after_dispute_timeout() tx
  * POST /api/escrow/build/update-milestones — build escrow.update_milestones() tx
  * PUT  /api/escrow/:escrowId/milestones    — record a confirmed milestone edit
  * POST /api/escrow/sync/:jobId             — sync on-chain escrow ID to DB job record
@@ -28,6 +29,7 @@ import { buildCreateArgs, buildUpdateMilestonesArgs } from "../lib/escrowArgs";
 import {
   buildFundArgs,
   buildReclaimArgs,
+  buildReclaimDisputeArgs,
   buildReleaseMilestoneArgs,
 } from "../lib/scval";
 import { getAsset, toBaseUnits, UnknownAssetError } from "../lib/assets";
@@ -286,6 +288,35 @@ escrowRouter.post("/build/reclaim", requireAuth, validate(z.object({ escrowId: z
     next(err);
   }
 });
+
+// POST /api/escrow/build/reclaim-dispute
+//
+// The timelock escape hatch for a panel that never rules:
+// `escrow.reclaim_after_dispute_timeout`. The contract is the authority on all
+// three preconditions — the caller is the client (client auth), the escrow is
+// still `Disputed`, and the dispute deadline has passed — so the route only
+// encodes the `u64` argument. Before the deadline the simulation fails with
+// `DisputeTimeoutNotReached`, which `friendlyContractError` reports as a 400.
+escrowRouter.post(
+  "/build/reclaim-dispute",
+  requireAuth,
+  validate(z.object({ escrowId: z.number() })),
+  async (req, res, next) => {
+    try {
+      const contract = new Contract(config.ESCROW_CONTRACT_ID);
+      const xdr = await buildTx(
+        res.locals.stellarAddress,
+        contract.call(
+          "reclaim_after_dispute_timeout",
+          ...buildReclaimDisputeArgs(req.body.escrowId),
+        ),
+      );
+      res.json({ xdr });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // POST /api/escrow/sync/:jobId — called by frontend after tx confirmed
 const syncSchema = z.object({ escrowId: z.number() });

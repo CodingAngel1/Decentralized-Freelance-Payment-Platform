@@ -20,6 +20,7 @@
  *   escrow.fund(escrow_id: u64)
  *   escrow.release_milestone(escrow_id: u64, milestone_index: u32)
  *   escrow.reclaim_expired(escrow_id: u64)
+ *   escrow.reclaim_after_dispute_timeout(escrow_id: u64)
  *   escrow.open_dispute(escrow_id: u64, initiator: Address)
  *   reputation.submit(rater: Address, ratee: Address, escrow_id: u64, score: u32)
  *   dispute.arbitrate(dispute_id: u64, client_share: i128, freelancer_share: i128)
@@ -64,6 +65,17 @@ export function buildReleaseMilestoneArgs(
 
 /** `escrow.reclaim_expired(escrow_id)` */
 export function buildReclaimArgs(escrowId: number | bigint): xdr.ScVal[] {
+  return [scU64(escrowId)];
+}
+
+/**
+ * `escrow.reclaim_after_dispute_timeout(escrow_id)`
+ *
+ * Same single-`u64` shape as `reclaim_expired`, but a different entry point: this
+ * is the timelock escape hatch from `Disputed`, not the expiry refund from
+ * `Active`. Keep it separate so the two calls cannot be swapped silently.
+ */
+export function buildReclaimDisputeArgs(escrowId: number | bigint): xdr.ScVal[] {
   return [scU64(escrowId)];
 }
 
