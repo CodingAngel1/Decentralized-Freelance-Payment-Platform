@@ -234,7 +234,41 @@ fn raise_records_expected_state() {
     assert_eq!(d.status, DisputeStatus::Raised);
     assert_eq!(d.escrow_id, id);
     assert_eq!(d.raised_by, f.client);
-    assert_eq!(f.dispute_client().dispute_for(&id), dispute_id);
+    assert_eq!(f.dispute_client().dispute_for(&f.escrow, &id), dispute_id);
+}
+
+#[test]
+fn two_escrow_contracts_can_each_raise_for_the_same_escrow_id() {
+    let f = setup();
+    // The first escrow contract raises a dispute for its escrow (id 0).
+    let (id, first) = f.raised();
+
+    // A second, unrelated escrow contract — a redeploy, or a staging instance —
+    // whose first escrow happens to get the same id.
+    let escrow2 = f.env.register(EscrowContract, ());
+    EscrowContractClient::new(&f.env, &escrow2).init(&f.arbitrator(), &f.dispute);
+    let ec2 = EscrowContractClient::new(&f.env, &escrow2);
+    let id2 = ec2.create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &[1_000]),
+        &10_000,
+    );
+    ec2.fund(&id2);
+    ec2.open_dispute(&id2, &f.client);
+    assert_eq!(id2, id, "both contracts number their first escrow the same");
+
+    // Must not be blocked by the dispute on the other escrow contract.
+    let second = f
+        .dispute_client()
+        .raise(&id2, &escrow2, &f.client, &f.reason());
+    assert_ne!(second, first);
+
+    // Each escrow contract resolves to its own dispute.
+    assert_eq!(f.dispute_client().dispute_for(&f.escrow, &id), first);
+    assert_eq!(f.dispute_client().dispute_for(&escrow2, &id2), second);
+    assert_eq!(f.dispute_client().get(&second).escrow_id, id2);
 }
 
 // ---------------------------------------------------------------------------
@@ -350,4 +384,12 @@ fn panel_and_threshold_are_readable() {
     let f = setup_panel(3, 2);
     assert_eq!(f.dispute_client().threshold(), 2);
     assert_eq!(f.dispute_client().arbitrators(), f.arbitrators);
+}
+
+#[test]
+fn dispute_for_an_escrow_without_a_dispute_is_not_found() {
+    let f = setup();
+    f.disputed(); // frozen, but never raised
+    let res = f.dispute_client().try_dispute_for(&f.escrow, &0);
+    assert!(matches!(res, Err(Ok(DisputeError::NotFound))));
 }

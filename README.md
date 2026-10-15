@@ -133,10 +133,10 @@ The events each contract emits are catalogued in [`docs/EVENTS.md`](./docs/EVENT
 | Function | Purpose |
 |----------|---------|
 | `init(arbitrators, threshold)` | One-shot setup; validates a non-empty panel and `1 <= threshold <= len` |
-| `raise(escrow_id, initiator)` | Verifies the escrow is `Disputed` and the caller is a party |
+| `raise(escrow_id, escrow_contract, raised_by, reason)` | Verifies the escrow on `escrow_contract` is `Disputed` and the caller is a party; rejects a second raise for the same `(escrow_contract, escrow_id)` |
 | `approve(dispute_id, arbitrator, client_share, freelancer_share)` | A panel vote; shares must sum to the escrowed total |
 | `arbitrate(dispute_id)` | Executes the split once approvals reach the threshold |
-| `get(dispute_id)` / `dispute_for(escrow_id)` / `arbitrators()` / `threshold()` | Read-only views |
+| `get(dispute_id)` / `dispute_for(escrow_contract, escrow_id)` / `arbitrators()` / `threshold()` | Read-only views |
 
 ### `reputation`
 

@@ -17,6 +17,10 @@
 //!   `escrow.resolve()`.
 //! - `raise` cross-checks the escrow contract: the escrow must be in `Disputed`
 //!   state and the initiator must be a participant.
+//! - The duplicate guard and `dispute_for` are scoped to
+//!   `(escrow_contract, escrow_id)`, so the same escrow id on a different escrow
+//!   contract (a redeploy, or a staging instance sharing this dispute contract)
+//!   can still raise and look up its own dispute.
 //! - `escrow.resolve()` independently validates that the shares sum to the funds
 //!   still held, so a bad proposal cannot over- or under-pay.
 //! - Escrow has a dispute timelock (`escrow.reclaim_after_dispute_timeout`) as an
@@ -84,8 +88,11 @@ pub enum DataKey {
     Threshold,
     /// (dispute_id, arbitrator) → the split that arbitrator approved.
     Approval(u64, Address),
-    /// escrow_id → dispute_id, to prevent duplicate disputes per escrow.
-    EscrowDispute(u64),
+    /// (escrow_contract, escrow_id) → dispute_id. Scoped by the escrow contract
+    /// so the duplicate guard covers one job, not every job that happens to
+    /// share an id: the same `escrow_id` on a different escrow contract (a
+    /// redeploy, or a second instance) is an unrelated escrow.
+    EscrowDispute(Address, u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -191,10 +198,14 @@ impl DisputeContract {
     ) -> Result<u64, DisputeError> {
         raised_by.require_auth();
 
+        // Scope the duplicate guard by the escrow contract as well as the id.
+        // Keying on `escrow_id` alone permanently blocked the same id on any
+        // other escrow contract (a redeploy pointed at this dispute contract, or
+        // a staging instance) as `AlreadyRaised` — nothing ever clears the key.
         if env
             .storage()
             .persistent()
-            .has(&DataKey::EscrowDispute(escrow_id))
+            .has(&DataKey::EscrowDispute(escrow_contract.clone(), escrow_id))
         {
             return Err(DisputeError::AlreadyRaised);
         }
@@ -232,14 +243,11 @@ impl DisputeContract {
             freelancer_share: 0,
         };
         Self::save(&env, id, &dispute);
+        let escrow_key = DataKey::EscrowDispute(escrow_contract, escrow_id);
+        env.storage().persistent().set(&escrow_key, &id);
         env.storage()
             .persistent()
-            .set(&DataKey::EscrowDispute(escrow_id), &id);
-        env.storage().persistent().extend_ttl(
-            &DataKey::EscrowDispute(escrow_id),
-            TTL_THRESHOLD,
-            TTL_EXTEND_TO,
-        );
+            .extend_ttl(&escrow_key, TTL_THRESHOLD, TTL_EXTEND_TO);
 
         Raised {
             escrow_id,
@@ -370,11 +378,19 @@ impl DisputeContract {
         Self::load(&env, dispute_id)
     }
 
-    /// Read the dispute ID for an escrow, if any (view).
-    pub fn dispute_for(env: Env, escrow_id: u64) -> Result<u64, DisputeError> {
+    /// Read the dispute ID for `escrow_id` on a given escrow contract (view).
+    ///
+    /// Takes the escrow contract too, so the lookup matches the `(escrow_contract,
+    /// escrow_id)` scope of the duplicate guard: the same id on a different
+    /// escrow contract is a different dispute.
+    pub fn dispute_for(
+        env: Env,
+        escrow_contract: Address,
+        escrow_id: u64,
+    ) -> Result<u64, DisputeError> {
         env.storage()
             .persistent()
-            .get(&DataKey::EscrowDispute(escrow_id))
+            .get(&DataKey::EscrowDispute(escrow_contract, escrow_id))
             .ok_or(DisputeError::NotFound)
     }
 
