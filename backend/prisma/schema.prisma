@@ -103,7 +103,18 @@ model Dispute {
   id               String        @id @default(cuid())
   /// On-chain dispute ID from dispute contract
   onChainId        BigInt?       @unique
-  jobId            String
+  /// One dispute per job, which is the invariant the contracts already enforce:
+  /// `dispute.raise` stores `EscrowDispute(escrow_id)` and returns
+  /// `AlreadyRaised` for a second raise, and a job has exactly one escrow.
+  ///
+  /// Unique rather than merely indexed because the row is written twice by two
+  /// different writers: `POST /api/disputes` creates it (with the reason, since
+  /// the `Raised` event carries none) before an on-chain id exists, and the
+  /// indexer's `raised` handler / `POST /:id/sync` attach the id afterwards.
+  /// Keying that second write on the job instead of on the id is what keeps a
+  /// disputed job from ending up with two rows — the bug fixed in #86. It is
+  /// also the unique key the indexer upserts on.
+  jobId            String        @unique
   job              Job           @relation(fields: [jobId], references: [id])
   raisedByAddress  String
   reason           String
@@ -113,9 +124,9 @@ model Dispute {
   resolvedAt       DateTime?
   createdAt        DateTime      @default(now())
 
-  // GET /api/jobs/:id `include: { disputes: true }` and the indexer's
-  // `dispute.updateMany({ where: { job: { escrowId } } })` join on jobId.
-  @@index([jobId])
+  // No @@index([jobId]): GET /api/jobs/:id `include: { disputes: true }` and the
+  // indexer's `dispute.updateMany({ where: { job: { escrowId } } })` both read by
+  // jobId, and the unique constraint above is that index.
 }
 
 enum DisputeStatus {

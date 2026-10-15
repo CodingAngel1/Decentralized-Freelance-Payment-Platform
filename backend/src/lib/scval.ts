@@ -23,6 +23,7 @@
  *   escrow.reclaim_after_dispute_timeout(escrow_id: u64)
  *   escrow.open_dispute(escrow_id: u64, initiator: Address)
  *   reputation.submit(rater: Address, ratee: Address, escrow_id: u64, score: u32)
+ *   dispute.raise(escrow_id: u64, escrow_contract: Address, raised_by: Address, reason: String)
  *   dispute.arbitrate(dispute_id: u64, client_share: i128, freelancer_share: i128)
  */
 
@@ -42,6 +43,14 @@ export const scU64 = (n: number | bigint): xdr.ScVal =>
 
 export const scI128 = (n: number | bigint): xdr.ScVal =>
   nativeToScVal(n, { type: "i128" });
+
+/**
+ * Soroban `String`. Named explicitly for the same reason as the numeric
+ * encoders: the type must not be inferred (a bare string would be fine today,
+ * but `Symbol`/`Bytes` are one keyword away and silently wrong).
+ */
+export const scString = (value: string): xdr.ScVal =>
+  nativeToScVal(value, { type: "string" });
 
 // ---------------------------------------------------------------------------
 // Route argument builders
@@ -95,6 +104,27 @@ export function buildReputationSubmitArgs(
   score: number,
 ): xdr.ScVal[] {
   return [scAddress(rater), scAddress(ratee), scU64(escrowId), scU32(score)];
+}
+
+/**
+ * `dispute.raise(escrow_id, escrow_contract, raised_by, reason)`
+ *
+ * `escrow_contract` is the address the dispute contract cross-calls to confirm
+ * the escrow is `Disputed` and that `raised_by` is one of its parties, so it has
+ * to be the deployed escrow, not an id.
+ */
+export function buildRaiseArgs(
+  escrowId: number | bigint,
+  escrowContract: string,
+  raisedBy: string,
+  reason: string,
+): xdr.ScVal[] {
+  return [
+    scU64(escrowId),
+    scAddress(escrowContract),
+    scAddress(raisedBy),
+    scString(reason),
+  ];
 }
 
 /**
