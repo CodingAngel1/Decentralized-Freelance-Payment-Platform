@@ -332,7 +332,7 @@ npx prisma generate
 npx tsc --noEmit
 npm test
 
-# Frontend — 33 tests
+# Frontend — 35 tests
 cd frontend
 npm run lint
 npx tsc --noEmit

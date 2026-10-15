@@ -35,7 +35,11 @@ export default function PostJob() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [freelancer, setFreelancer] = useState("");
-  const [assetSymbol, setAssetSymbol] = useState(ASSETS[0]?.symbol ?? "USDC");
+  // Default to the first asset this build actually has a SAC for; on the
+  // current testnet deployment that is XLM (USDC has no contract id yet).
+  const [assetSymbol, setAssetSymbol] = useState(
+    ASSETS.find((a) => a.contractId)?.symbol ?? ASSETS[0]?.symbol ?? "USDC",
+  );
   const [expiryDays, setExpiryDays] = useState("30");
   const [rows, setRows] = useState<MilestoneRow[]>([{ amount: "" }]);
   const [created, setCreated] = useState<CreateAndFundResult | null>(null);
@@ -152,8 +156,9 @@ export default function PostJob() {
             Payment asset{" "}
             <select value={assetSymbol} onChange={(e) => setAssetSymbol(e.target.value)}>
               {ASSETS.map((a) => (
-                <option key={a.symbol} value={a.symbol}>
+                <option key={a.symbol} value={a.symbol} disabled={!a.contractId}>
                   {a.symbol}
+                  {a.contractId ? "" : " (not configured)"}
                 </option>
               ))}
             </select>
