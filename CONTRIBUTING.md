@@ -262,6 +262,45 @@ The scoped backlog lives in [`docs/wave-issues/`](./docs/wave-issues/).
 
 ---
 
+## Dependency security
+
+Three lockfiles are committed (`backend/package-lock.json`,
+`frontend/package-lock.json`, `contracts/Cargo.lock`), so a version only moves
+when something bumps it. Two mechanisms cover that:
+
+- **`.github/dependabot.yml`** opens weekly update PRs for npm (`/backend`,
+  `/frontend`), cargo (`/contracts`) and the GitHub Actions used by
+  `.github/workflows/ci.yml`. Minor and patch updates are grouped per ecosystem;
+  majors arrive on their own so a breaking bump is reviewed deliberately.
+- **The `Dependencies – vulnerability scan` job** runs
+  `npm audit --audit-level=high --omit=dev` for both packages and
+  `cargo audit` for the contracts on every push and PR.
+
+**The scan is advisory today, not blocking.** Both lockfiles carry known
+high/critical advisories that need a dependency bump, not a CI change, so the
+steps use `continue-on-error: true`: the report is visible in the run (and in the
+check's annotations) without failing every unrelated PR. Make it blocking —
+delete `continue-on-error` — once `npm audit --audit-level=high --omit=dev` and
+`cargo audit` are both clean.
+
+`--omit=dev` deliberately audits only what ships. Build/test tooling (vite,
+vitest, eslint, tsx) is not scanned there because it never runs in production;
+`cargo audit` does cover the workspace's dev-dependencies, because the contract
+tests compile the same crates the wasm build does.
+
+Handling a new advisory:
+
+1. Prefer a bump: `npm audit fix` for a non-breaking fix, or the Dependabot PR.
+2. If the finding is in a production dependency, treat it as a bug rather than
+   noise — the backend verifies wallet signatures and holds JWTs, so a parsing or
+   network flaw in one of its dependencies is reachable from the internet.
+3. Only after 1 and 2 have been tried, and only with a link to the upstream
+   advisory plus a tracking issue, pin or override the affected version.
+4. Never silence a finding by removing the step or lowering `--audit-level` in a
+   pull request.
+
+---
+
 ## Security
 
 Read [`SECURITY.md`](./SECURITY.md) before reporting a vulnerability. The
