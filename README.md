@@ -54,7 +54,7 @@ cd frontend && vercel deploy --prod
 
 1. **Client posts a job** — defines milestones (amount + deadline each) and funds the escrow contract.
 2. **Freelancer delivers work** — the client releases each milestone, fully or in part, as deliverables are approved.
-3. **Dispute resolution** — either party can freeze the escrow and raise a dispute; an M-of-N arbitrator panel distributes funds. If the panel stalls, a 7-day timelock unlocks an escape hatch for both parties.
+3. **Dispute resolution** — either party can freeze the escrow and raise a dispute; an M-of-N arbitrator panel distributes funds. If the panel stalls, a 7-day timelock unlocks an escape hatch — but only the client can use it.
 4. **Reputation** — both parties rate each other on-chain after completion; scores are permanent, verifiable, and weighted by job size.
 
 ## Project status
@@ -67,8 +67,8 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | `dispute` contract | ✅ Complete — verified raise, M-of-N arbitrator panel, resolution that calls back into escrow, dispute timelock |
 | `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings, amount-weighted aggregates, per-pair anti-spam (`docs/REPUTATION.md`) |
 | Contract tests | ✅ 86 tests: 83 unit tests (escrow 49, dispute 17, reputation 17) covering every state transition and failure path, plus 3 end-to-end tests in `contracts/dispute/tests/full_flow.rs` that drive escrow + dispute + reputation together |
-| Backend tests | ✅ 60 tests |
-| Frontend tests | ✅ 33 tests (Vitest + Testing Library) |
+| Backend tests | ✅ 74 tests |
+| Frontend tests | ✅ 86 tests (Vitest + Testing Library) — pages, components and lib helpers |
 | Testnet deployment | ✅ Deployed and initialized (ids in [`deployments/testnet.json`](./deployments/testnet.json)) |
 | Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation |
 | Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC, with a dead-letter table for events it cannot apply |
@@ -80,7 +80,7 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | USDC configuration | ❌ Not wired on testnet yet — the demo uses the XLM SAC |
 | Security audit | ❌ Not audited |
 
-Scoped work is tracked in [`docs/wave-issues/`](./docs/wave-issues/).
+Scoped work is tracked in the [issue tracker](https://github.com/vatal-system/Decentralized-Freelance-Payment-Platform/issues); design notes for issues #2-#18 live in [`docs/wave-issues/`](./docs/wave-issues/).
 
 ## Architecture
 
@@ -91,8 +91,9 @@ Client ── create / fund / release_milestone / release_partial / reclaim_* �
                                                                                  │  ▲
                                           arbitrate() ── resolve() ──┘  │ (dispute contract only)
 DisputeContract ◄── Arbitrator                                        │
-      │  verifies escrow is Disputed + caller is on the panel         │
-      └── submit(rater, ratee, escrow_id, score) ─► ReputationContract
+   raise(escrow_id, escrow_contract, raised_by, reason)               │
+   (verifies escrow is Disputed; caller must be a party)              │
+Client / Freelancer ── submit(rater, ratee, escrow_id, score) ──► ReputationContract
                       (verifies the job Completed + participants)
 ```
 
@@ -123,9 +124,9 @@ The events each contract emits are catalogued in [`docs/EVENTS.md`](./docs/EVENT
 | `release_milestone(escrow_id, milestone_index)` | Releases a whole milestone to the freelancer |
 | `release_partial(escrow_id, milestone_index, amount)` | Releases part of a milestone; tracks `released_amount` |
 | `open_dispute(escrow_id, initiator)` | Either participant freezes the escrow |
-| `reclaim_after_dispute_timeout(escrow_id)` | Escape hatch once the 7-day dispute timelock passes |
+| `reclaim_after_dispute_timeout(escrow_id)` | Client-only escape hatch once the 7-day dispute timelock passes |
 | `resolve(escrow_id, client_share, freelancer_share)` | Dispute-contract-only; splits the funds |
-| `reclaim_expired(escrow_id)` | Client refund after expiry with nothing released |
+| `reclaim_expired(escrow_id)` | Client-only refund of the unreleased remainder after expiry; earlier partial releases are not clawed back |
 | `get(escrow_id)` / `dispute_deadline(escrow_id)` / `dispute_contract()` | Read-only views |
 
 ### `dispute`
@@ -133,10 +134,10 @@ The events each contract emits are catalogued in [`docs/EVENTS.md`](./docs/EVENT
 | Function | Purpose |
 |----------|---------|
 | `init(arbitrators, threshold)` | One-shot setup; validates a non-empty panel and `1 <= threshold <= len` |
-| `raise(escrow_id, escrow_contract, raised_by, reason)` | Verifies the escrow on `escrow_contract` is `Disputed` and the caller is a party; rejects a second raise for the same `(escrow_contract, escrow_id)` |
-| `approve(dispute_id, arbitrator, client_share, freelancer_share)` | A panel vote; shares must sum to the escrowed total |
-| `arbitrate(dispute_id)` | Executes the split once approvals reach the threshold |
-| `get(dispute_id)` / `dispute_for(escrow_contract, escrow_id)` / `arbitrators()` / `threshold()` | Read-only views |
+| `raise(escrow_id, escrow_contract, raised_by, reason)` | Records the dispute and returns its id; cross-checks that the escrow is `Disputed` and `raised_by` is a party |
+| `approve(dispute_id, arbitrator, client_share, freelancer_share)` | Panel-only vote on a split; rejects negative shares only — the sum must equal the funds held, enforced later by `escrow.resolve` |
+| `arbitrate(dispute_id, client_share, freelancer_share)` | Executes the split once approvals *for that exact split* reach the threshold; cross-calls `escrow.resolve` |
+| `get(dispute_id)` / `dispute_for(escrow_id)` / `arbitrators()` / `threshold()` | Read-only views |
 
 ### `reputation`
 
@@ -147,7 +148,13 @@ The events each contract emits are catalogued in [`docs/EVENTS.md`](./docs/EVENT
 | `get_aggregate(address)` | Amount-weighted `{ total_score, weight, count }` |
 | `get_rating(rater, escrow_id)` | A single rating |
 
-Full signatures, error codes, and the contract reference table are in
+These tables are a summary; **the code is canonical** — `contracts/*/src/lib.rs`
+is the source of truth, and this table set and the one in
+[`CONTRIBUTING.md`](./CONTRIBUTING.md) must both match it. If a table and the
+code ever disagree, trust the code and fix the table: the PR checklist
+(`.github/pull_request_template.md`) asks every PR to re-verify both copies.
+
+Full signatures and error codes are in
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## Backend API
@@ -171,6 +178,7 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/escrow/build/fund` | ✅ | Build `escrow.fund` |
 | `POST` | `/api/escrow/build/release` | ✅ | Build `escrow.release_milestone` |
 | `POST` | `/api/escrow/build/reclaim` | ✅ | Build `escrow.reclaim_expired` |
+| `POST` | `/api/escrow/build/reclaim-dispute` | ✅ | Build `escrow.reclaim_after_dispute_timeout` (client, after the 7-day dispute timelock) |
 | `POST` | `/api/escrow/build/update-milestones` | ✅ | Build `escrow.update_milestones` (client, before funding) |
 | `PUT` | `/api/escrow/:escrowId/milestones` | ✅ | Record a confirmed milestone edit |
 | `POST` | `/api/escrow/sync/:jobId` | ✅ | Link an escrow id to a job |
@@ -194,11 +202,14 @@ React + TypeScript + Vite, with Freighter for signing.
 | `/` | `Dashboard` | Filterable, paginated job list from the API |
 | `/post` | `PostJob` | Milestones + asset picker → on-chain create/fund, then the off-chain record |
 | `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
-| `/profile/:address` | `Profile` | On-chain reputation and job history |
+| `/profile/:address` | `Profile` | On-chain reputation aggregate (weighted average + rating count) |
 
 Every write shows the transaction hash and a stellar.expert link, contract errors
 are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target
-pending state stops double submits.
+pending state stops double submits. Every address on screen is copyable in one
+click and can be expanded into a QR code to scan into a wallet
+(`frontend/src/components/AddressField.tsx`) — a `G…` address is 56 characters,
+and selecting one by hand is how funds reach the wrong account.
 
 ## Stack
 
@@ -209,7 +220,7 @@ pending state stops double submits.
 | Wallet | Freighter browser extension (SEP-53 message signing) |
 | Backend | Express 4 + Prisma 5 + PostgreSQL, Zod validation, JWT (`jose`), Helmet, rate limiting |
 | Chain access | `@stellar/stellar-sdk` 12 (Soroban RPC + Horizon) |
-| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend |
+| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend, dependency vulnerability scan (advisory; `npm audit` + `cargo audit`) |
 
 ## Repository layout
 
@@ -326,13 +337,13 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 stellar contract build          # requires stellar-cli v25.2.0+
 
-# Backend — 60 tests
+# Backend — 74 tests
 cd backend
 npx prisma generate
 npx tsc --noEmit
 npm test
 
-# Frontend — 33 tests
+# Frontend — 86 tests
 cd frontend
 npm run lint
 npx tsc --noEmit
@@ -376,7 +387,7 @@ Full checklist, environment tables, and post-deploy verification queries:
 | [`docs/ASSETS.md`](./docs/ASSETS.md) | Payment-asset registry and how to add one |
 | [`docs/DISPUTES.md`](./docs/DISPUTES.md) | Arbitrator panel, thresholds, and the dispute timelock |
 | [`docs/REPUTATION.md`](./docs/REPUTATION.md) | Rating rules, weighting, and anti-spam |
-| [`docs/wave-issues/`](./docs/wave-issues/) | The scoped work backlog these features came from |
+| [`docs/wave-issues/`](./docs/wave-issues/) | Design notes for issues #2-#18 (all implemented) |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Setup, conventions, contract reference tables |
 | [`SECURITY.md`](./SECURITY.md) | How to report a vulnerability |
 | [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) | Community expectations |

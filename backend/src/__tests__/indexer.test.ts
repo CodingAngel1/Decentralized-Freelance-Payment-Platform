@@ -1,14 +1,21 @@
 import { describe, it, expect, vi } from "vitest";
 import { Address, Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
+import type { DisputeStatus, JobStatus } from "@prisma/client";
 import {
   decodeEventData,
+  decodeEventFields,
   decodeEventName,
   type ContractEventLike,
 } from "../lib/events";
 import {
+  EVENT_TOPIC_FIELDS,
   applyRatedEvent,
+  handleDisputeOpened,
+  handleRaised,
+  handleRefunded,
   processContractEvents,
   resolveStartLedger,
+  type DisputeLifecycleStores,
   type RatedStores,
 } from "../indexer";
 
@@ -21,17 +28,28 @@ function mapVal(entries: Record<string, xdr.ScVal>): xdr.ScVal {
   );
 }
 
+/**
+ * Build an event the way the contracts do: the name in `topic[0]`, the struct's
+ * `#[topic]` field(s) next, and everything else in the value map.
+ */
 function makeEvent(
   name: string,
   data: Record<string, xdr.ScVal>,
   ledger = 10,
+  topics: xdr.ScVal[] = [],
 ): ContractEventLike {
   return {
     id: `evt-${ledger}`,
     ledger,
-    topic: [xdr.ScVal.scvSymbol(name)],
+    topic: [xdr.ScVal.scvSymbol(name), ...topics],
     value: mapVal(data),
   };
+}
+
+/** Decode an event's fields the way `dispatchEvent` does, topic fields included. */
+function eventFields(event: ContractEventLike): Record<string, unknown> {
+  const name = decodeEventName(event) ?? "";
+  return decodeEventFields(event, EVENT_TOPIC_FIELDS[name] ?? []);
 }
 
 /**
@@ -80,6 +98,47 @@ describe("event decoding", () => {
     const event = makeEvent("rated", {});
     expect(decodeEventName({ topic: [] })).toBeNull();
     expect(decodeEventData(event)).toEqual({});
+  });
+
+  it("reads a #[topic] field out of topic[1] on a captured testnet event", () => {
+    // Captured from Soroban RPC testnet (tx 25bd0fb5b…): the dispute contract's
+    // `Raised` marks escrow_id as #[topic], so it is in topic1 and the value map
+    // holds only dispute_id and raised_by. Reading the value map alone — which
+    // is what the indexer used to do — yields no escrow_id, so the handler
+    // looked up nothing and the row's onChainId stayed null forever.
+    const event = {
+      ledger: 5_215_991,
+      topic: [
+        xdr.ScVal.fromXDR("AAAADwAAAAZyYWlzZWQAAA==", "base64"),
+        xdr.ScVal.fromXDR("AAAABQAAAAAAAAAK", "base64"),
+      ],
+      value: xdr.ScVal.fromXDR(
+        "AAAAEQAAAAEAAAACAAAADwAAAApkaXNwdXRlX2lkAAAAAAAFAAAAAAAAAAAAAAAPAAAACXJhaXNlZF9ieQAAAAAAABIAAAAAAAAAANGUF9btHFYS065a5qcfCrce1Lej1XjYw3pe/XrWguqR",
+        "base64",
+      ),
+    };
+
+    expect(decodeEventName(event)).toBe("raised");
+    expect(decodeEventData(event).escrow_id).toBeUndefined();
+
+    const fields = eventFields(event);
+    expect(fields.escrow_id).toBe(10n);
+    expect(fields.dispute_id).toBe(0n);
+    expect(fields.raised_by).toBe("GDIZIF6W5UOFMEWTVZNONJY7BK3R5VFXUPKXRWGDPJPP26WWQLVJCRJG");
+  });
+
+  it("leaves an event whose escrow_id is a data field alone", () => {
+    // escrow's `created`/`funded` put the client in topic1 and escrow_id in the
+    // data, so the merge must not blank it.
+    const event = makeEvent(
+      "funded",
+      { escrow_id: nativeToScVal(7n, { type: "u64" }), amount: nativeToScVal(3n, { type: "i128" }) },
+      10,
+      [Address.fromString(Keypair.random().publicKey()).toScVal()],
+    );
+
+    expect(EVENT_TOPIC_FIELDS.funded).toBeUndefined();
+    expect(eventFields(event).escrow_id).toBe(7n);
   });
 });
 
@@ -408,5 +467,292 @@ describe("rated events", () => {
 
     expect(outcome).toEqual({ status: "skipped", reason: "malformed" });
     expect(db.ratings.size).toBe(0);
+  });
+});
+
+/**
+ * In-memory stand-in for the store the dispute-lifecycle handlers write through,
+ * so `dispute_opened → raised → refunded` can be driven end to end without a
+ * database (the same approach as `FakeRatedStore`).
+ */
+class FakeDisputeStore implements DisputeLifecycleStores {
+  private readonly jobs = new Map<bigint, { id: string; status: JobStatus }>();
+  // Keyed on the job, mirroring the unique constraint the real table has.
+  private readonly disputes = new Map<
+    string,
+    {
+      onChainId: bigint | null;
+      jobId: string;
+      raisedByAddress: string;
+      reason: string;
+      status: DisputeStatus;
+      resolvedAt: Date | null;
+    }
+  >();
+  private seq = 0;
+
+  /** Seed the mirrored job for an escrow and return its id. */
+  seedJob(escrowId: bigint): string {
+    const id = `job-${++this.seq}`;
+    this.jobs.set(escrowId, { id, status: "CREATED" });
+    return id;
+  }
+
+  jobStatus(escrowId: bigint): JobStatus | undefined {
+    return this.jobs.get(escrowId)?.status;
+  }
+
+  disputeRows(): Array<{
+    onChainId: bigint | null;
+    jobId: string;
+    raisedByAddress: string;
+    reason: string;
+    status: DisputeStatus;
+    resolvedAt: Date | null;
+  }> {
+    return [...this.disputes.values()];
+  }
+
+  /** Pre-seed a dispute row, e.g. one an arbitrator had already picked up. */
+  seedDispute(escrowId: bigint, status: DisputeStatus): void {
+    const job = this.jobs.get(escrowId);
+    if (!job) throw new Error("seed the job first");
+    this.disputes.set(job.id, {
+      onChainId: BigInt(++this.seq),
+      jobId: job.id,
+      raisedByAddress: "GRAISER",
+      reason: "",
+      status,
+      resolvedAt: status === "RESOLVED" ? new Date() : null,
+    });
+  }
+
+  /**
+   * Pre-seed the row `POST /api/disputes` writes: the reason is known, the
+   * on-chain id is not (the contract has not minted one yet).
+   */
+  seedIntentRow(escrowId: bigint, reason: string): void {
+    const job = this.jobs.get(escrowId);
+    if (!job) throw new Error("seed the job first");
+    this.disputes.set(job.id, {
+      onChainId: null,
+      jobId: job.id,
+      // Whoever called the API — which is not necessarily whoever raised it.
+      raisedByAddress: "GWHO_RECORDED_IT",
+      reason,
+      status: "RAISED",
+      resolvedAt: null,
+    });
+  }
+
+  job = {
+    findUnique: async ({ where }: { where: { escrowId: bigint } }) => {
+      const job = this.jobs.get(where.escrowId);
+      return job ? { id: job.id } : null;
+    },
+    updateMany: async ({
+      where,
+      data,
+    }: {
+      where: { escrowId: bigint };
+      data: { status: JobStatus };
+    }) => {
+      const job = this.jobs.get(where.escrowId);
+      if (job) job.status = data.status;
+      return { count: job ? 1 : 0 };
+    },
+  };
+
+  dispute = {
+    upsert: async ({
+      where,
+      create,
+      update,
+    }: {
+      where: { jobId: string };
+      create: {
+        onChainId: bigint;
+        jobId: string;
+        raisedByAddress: string;
+        reason: string;
+      };
+      update: { onChainId: bigint };
+    }) => {
+      const existing = this.disputes.get(where.jobId);
+      // Updating the row the API already created, rather than inserting a second
+      // one, is the whole point of keying on the job.
+      if (existing) {
+        Object.assign(existing, update);
+        return existing;
+      }
+      const row = { ...create, status: "RAISED" as DisputeStatus, resolvedAt: null };
+      this.disputes.set(where.jobId, row);
+      return row;
+    },
+    updateMany: async ({
+      where,
+      data,
+    }: {
+      where: { job: { escrowId: bigint }; status: { in: DisputeStatus[] } };
+      data: { status: DisputeStatus; resolvedAt: Date };
+    }) => {
+      const job = this.jobs.get(where.job.escrowId);
+      if (!job) return { count: 0 };
+      let count = 0;
+      for (const row of this.disputes.values()) {
+        if (row.jobId === job.id && where.status.in.includes(row.status)) {
+          row.status = data.status;
+          row.resolvedAt = data.resolvedAt;
+          count++;
+        }
+      }
+      return { count };
+    },
+  };
+}
+
+describe("dispute lifecycle events", () => {
+  const CLIENT = Keypair.random().publicKey();
+
+  /**
+   * Decode a real event payload, so the handlers see what the chain emits —
+   * including the `escrow_id` that these events carry in topic1.
+   */
+  function eventData(
+    name: string,
+    fields: Record<string, xdr.ScVal>,
+    escrowId = 7n,
+  ): Record<string, unknown> {
+    return eventFields(
+      makeEvent(name, fields, 10, [nativeToScVal(escrowId, { type: "u64" })]),
+    );
+  }
+
+  const disputeOpened = () =>
+    eventData("dispute_opened", { initiator: Address.fromString(CLIENT).toScVal() });
+
+  const raised = () =>
+    eventData("raised", {
+      dispute_id: nativeToScVal(3n, { type: "u64" }),
+      raised_by: Address.fromString(CLIENT).toScVal(),
+    });
+
+  const refunded = (escrowId = 7n) =>
+    eventData(
+      "refunded",
+      {
+        client: Address.fromString(CLIENT).toScVal(),
+        amount: nativeToScVal(20_000_000n, { type: "i128" }),
+      },
+      escrowId,
+    );
+
+  it("drives dispute_opened → raised → refunded and leaves no open dispute", async () => {
+    const db = new FakeDisputeStore();
+    const jobId = db.seedJob(7n);
+
+    // 1. open_dispute freezes the job. The dispute row does not exist yet: the
+    //    on-chain dispute has no id until `raise` (documented in indexer.ts).
+    await handleDisputeOpened(db, disputeOpened());
+    expect(db.jobStatus(7n)).toBe("DISPUTED");
+    expect(db.disputeRows()).toHaveLength(0);
+
+    // 2. dispute.raise records the on-chain dispute against the job.
+    await handleRaised(db, raised());
+    expect(db.disputeRows()).toHaveLength(1);
+    expect(db.disputeRows()[0]).toMatchObject({
+      onChainId: 3n,
+      jobId,
+      status: "RAISED",
+      resolvedAt: null,
+    });
+
+    // 3. reclaim_after_dispute_timeout refunds the escrow and closes the dispute.
+    await handleRefunded(db, refunded());
+
+    expect(db.jobStatus(7n)).toBe("REFUNDED");
+    const rows = db.disputeRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("REFUNDED");
+    expect(rows[0].resolvedAt).toBeInstanceOf(Date);
+    // No dispute for the escrow is left open.
+    expect(rows.filter((row) => row.status === "RAISED" || row.status === "UNDER_REVIEW"))
+      .toHaveLength(0);
+  });
+
+  it("converges the API's off-chain row with the raised event instead of duplicating it", async () => {
+    const db = new FakeDisputeStore();
+    const jobId = db.seedJob(7n);
+    // `POST /api/disputes` recorded the reason before dispute.raise ran.
+    db.seedIntentRow(7n, "Milestone never delivered");
+
+    await handleDisputeOpened(db, disputeOpened());
+    await handleRaised(db, raised());
+
+    // One row, holding both the reason and the id. Keying the upsert on
+    // `onChainId` (as this handler used to) inserted a second row here, and the
+    // resolve route then failed forever on the row whose id stayed null.
+    const rows = db.disputeRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      jobId,
+      onChainId: 3n,
+      reason: "Milestone never delivered",
+      status: "RAISED",
+      // The event's raiser is authoritative: the contract checked that
+      // `raised_by` is a party, while the row only knows who called the API.
+      raisedByAddress: CLIENT,
+    });
+  });
+
+  it("stays one row when the same raised event is indexed twice", async () => {
+    const db = new FakeDisputeStore();
+    db.seedJob(7n);
+    db.seedIntentRow(7n, "Milestone never delivered");
+
+    // A cursor rewind replays the event; the row must not multiply, and
+    // re-writing the same values must not disturb the stored reason.
+    await handleRaised(db, raised());
+    await handleRaised(db, raised());
+
+    expect(db.disputeRows()).toHaveLength(1);
+    expect(db.disputeRows()[0]).toMatchObject({
+      onChainId: 3n,
+      reason: "Milestone never delivered",
+    });
+  });
+
+  it("closes an UNDER_REVIEW dispute too (an arbitrator had started)", async () => {
+    const db = new FakeDisputeStore();
+    db.seedJob(7n);
+    db.seedDispute(7n, "UNDER_REVIEW");
+
+    await handleRefunded(db, refunded());
+
+    expect(db.jobStatus(7n)).toBe("REFUNDED");
+    expect(db.disputeRows()[0].status).toBe("REFUNDED");
+    expect(db.disputeRows()[0].resolvedAt).toBeInstanceOf(Date);
+  });
+
+  it("leaves a dispute the panel already resolved untouched", async () => {
+    const db = new FakeDisputeStore();
+    db.seedJob(7n);
+    db.seedDispute(7n, "RESOLVED");
+
+    await handleRefunded(db, refunded());
+
+    expect(db.jobStatus(7n)).toBe("REFUNDED");
+    expect(db.disputeRows()[0].status).toBe("RESOLVED");
+  });
+
+  it("refunds an escrow that was never disputed without inventing a dispute", async () => {
+    const db = new FakeDisputeStore();
+    db.seedJob(9n);
+
+    // reclaim_expired runs from Active, so there is no dispute to close.
+    await handleRefunded(db, refunded(9n));
+
+    expect(db.jobStatus(9n)).toBe("REFUNDED");
+    expect(db.disputeRows()).toHaveLength(0);
   });
 });

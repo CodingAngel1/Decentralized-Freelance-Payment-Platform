@@ -19,7 +19,7 @@
 //! `submit` already reads the escrow to verify completion, so weighting costs no
 //! extra cross-contract call, and `get_aggregate` is a single storage read with
 //! none at all (see the cost model in `docs/REPUTATION.md`).
-//! - Phase 3 (see `docs/wave-issues`): skill-tag endorsements.
+//! - Phase 3 (future work, not yet filed): skill-tag endorsements.
 
 #![no_std]
 

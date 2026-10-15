@@ -4,11 +4,14 @@ import {
   buildArbitrateArgs,
   buildFundArgs,
   buildOpenDisputeArgs,
+  buildRaiseArgs,
   buildReclaimArgs,
+  buildReclaimDisputeArgs,
   buildReleaseMilestoneArgs,
   buildReputationSubmitArgs,
   scAddress,
   scI128,
+  scString,
   scU32,
   scU64,
 } from "../lib/scval";
@@ -59,6 +62,12 @@ describe("route argument builders", () => {
     expect(buildReclaimArgs(7n).map(tag)).toEqual(["scvU64"]);
   });
 
+  it("buildReclaimDisputeArgs: escrow_id is u64 for the dispute-timelock path", () => {
+    const args = buildReclaimDisputeArgs(7n);
+    expect(args.map(tag)).toEqual(["scvU64"]);
+    expect(scValToNative(args[0])).toBe(7n);
+  });
+
   it("buildOpenDisputeArgs: escrow_id is u64 and initiator is an address", () => {
     const initiator = Keypair.random().publicKey();
     const args = buildOpenDisputeArgs(7n, initiator);
@@ -77,6 +86,29 @@ describe("route argument builders", () => {
     expect(scValToNative(args[1])).toBe(ratee);
     expect(scValToNative(args[2])).toBe(7n);
     expect(scValToNative(args[3])).toBe(5);
+  });
+
+  it("buildRaiseArgs: escrow u64, escrow contract and raiser addresses, reason string", () => {
+    const escrowContract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+    const raisedBy = Keypair.random().publicKey();
+
+    const args = buildRaiseArgs(7n, escrowContract, raisedBy, "Milestone never delivered");
+
+    expect(args.map(tag)).toEqual([
+      "scvU64",
+      "scvAddress",
+      "scvAddress",
+      "scvString",
+    ]);
+    expect(scValToNative(args[0])).toBe(7n);
+    // The escrow contract address, not the escrow id: dispute.raise cross-calls
+    // it to confirm the escrow is Disputed.
+    expect(scValToNative(args[1])).toBe(escrowContract);
+    expect(scValToNative(args[2])).toBe(raisedBy);
+    expect(scValToNative(args[3])).toBe("Milestone never delivered");
+    // A bare string would encode as the same type today, which is exactly why
+    // the type is asserted: Symbol would silently decode as a different String.
+    expect(tag(scString("x"))).toBe("scvString");
   });
 
   it("buildArbitrateArgs: both shares are i128", () => {

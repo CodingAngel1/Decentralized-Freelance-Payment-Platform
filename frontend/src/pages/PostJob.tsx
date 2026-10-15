@@ -20,12 +20,22 @@ import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
 import { useEscrow, type CreateAndFundResult } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
-import { ASSETS, getAsset, toBaseUnits } from "../lib/assets";
+import { ASSETS, formatAmount, getAsset, toBaseUnits } from "../lib/assets";
 import { authenticate, createJob, linkEscrowId } from "../lib/api";
 import { CONTRACT_ADDRESSES, explorerTxUrl } from "../lib/stellar";
 
 interface MilestoneRow {
   amount: string;
+}
+
+/**
+ * Base units for one row's raw input, treating anything that is not a plain
+ * decimal (empty or mid-typing like `.`) as zero so the live total never throws.
+ */
+function amountToBaseUnits(value: string, decimals: number): bigint {
+  const trimmed = value.trim();
+  if (!/^\d*\.?\d+$/.test(trimmed)) return 0n;
+  return toBaseUnits(trimmed, decimals);
 }
 
 export default function PostJob() {
@@ -35,7 +45,11 @@ export default function PostJob() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [freelancer, setFreelancer] = useState("");
-  const [assetSymbol, setAssetSymbol] = useState(ASSETS[0]?.symbol ?? "USDC");
+  // Default to the first asset this build actually has a SAC for; on the
+  // current testnet deployment that is XLM (USDC has no contract id yet).
+  const [assetSymbol, setAssetSymbol] = useState(
+    ASSETS.find((a) => a.contractId)?.symbol ?? ASSETS[0]?.symbol ?? "USDC",
+  );
   const [expiryDays, setExpiryDays] = useState("30");
   const [rows, setRows] = useState<MilestoneRow[]>([{ amount: "" }]);
   const [created, setCreated] = useState<CreateAndFundResult | null>(null);
@@ -46,7 +60,13 @@ export default function PostJob() {
   const updateRow = (i: number, amount: string) =>
     setRows((r) => r.map((row, idx) => (idx === i ? { amount } : row)));
 
-  const total = rows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+  // Sum in base units and format once, so the on-screen total is the exact value
+  // the API stores. Adding decimals as JavaScript numbers shows
+  // 0.1 + 0.1 + 0.1 = 0.30000000000000004 and would disagree with the record.
+  const total = formatAmount(
+    rows.reduce((sum, r) => sum + amountToBaseUnits(r.amount, asset.decimals), 0n),
+    asset.decimals,
+  );
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -83,7 +103,12 @@ export default function PostJob() {
           expiresAt,
           milestones: rows.map((r, i) => ({
             description: `Milestone ${i + 1}`,
-            amountUsdc: Number(r.amount),
+            // Send the exact decimal string, not a float round-trip: the API
+            // sums base units and stores this as the canonical amount.
+            amountUsdc: formatAmount(
+              amountToBaseUnits(r.amount, asset.decimals),
+              asset.decimals,
+            ),
             deadline: expiresAt,
           })),
         },
@@ -152,8 +177,9 @@ export default function PostJob() {
             Payment asset{" "}
             <select value={assetSymbol} onChange={(e) => setAssetSymbol(e.target.value)}>
               {ASSETS.map((a) => (
-                <option key={a.symbol} value={a.symbol}>
+                <option key={a.symbol} value={a.symbol} disabled={!a.contractId}>
                   {a.symbol}
+                  {a.contractId ? "" : " (not configured)"}
                 </option>
               ))}
             </select>

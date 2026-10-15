@@ -2,12 +2,13 @@
  * Profile.tsx
  *
  * Displays a user's on-chain reputation aggregate (total score + count).
- * Job history will come from the backend indexer (see docs/wave-issues/).
+ * Job history will come from the backend indexer (see issue #17).
  */
 
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import Layout from "../components/Layout";
+import AddressField from "../components/AddressField";
 import { useEscrow, type ReputationView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 
@@ -34,9 +35,11 @@ export default function Profile() {
   return (
     <Layout>
       <h1>Profile</h1>
-      <p>
-        Address: <code>{address}</code>
-      </p>
+      {address && (
+        <p>
+          Address: <AddressField address={address} label="profile address" qr />
+        </p>
+      )}
 
       {!publicKey && (
         <p>

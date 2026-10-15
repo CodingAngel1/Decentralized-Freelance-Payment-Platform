@@ -17,6 +17,21 @@
  *   dispute    — raised, approved, dispute_resolved
  *   reputation — rated
  *
+ * Almost every event carries its `escrow_id` in `topic[1]` rather than in the
+ * data map; `decodeEventFields` merges the two so a handler always sees it (see
+ * the doc comment on its `EVENT_TOPIC_FIELDS`).
+ *
+ * Dispute record semantics (see docs/DISPUTES.md):
+ *   - `dispute_opened` only marks the job DISPUTED. There is no Dispute row yet:
+ *     the on-chain dispute has no id or reason until `dispute.raise`, so the row
+ *     is created when `raised` is indexed. A job is therefore DISPUTED with an
+ *     empty `disputes[]` between the two transactions — by design.
+ *   - `refunded` is terminal, so it also closes any open dispute for the escrow
+ *     (RAISED/UNDER_REVIEW → REFUNDED). Without that, a refunded job would keep
+ *     reporting a live dispute forever, because no later event touches it.
+ *   - `resolved` sets both the job (COMPLETED) and its dispute (RESOLVED);
+ *     `REFUNDED` and `RESOLVED` are the two terminal dispute states.
+ *
  * Contributor Notes:
  * - The cursor (last scanned ledger) is persisted in IndexerCursor, so the
  *   indexer resumes after a restart and does not reprocess applied ledgers.
@@ -29,11 +44,13 @@
  */
 
 import { SorobanRpc } from "@stellar/stellar-sdk";
+import type { DisputeStatus, JobStatus } from "@prisma/client";
 import { config } from "./config";
 import { prisma } from "./db";
 import {
   KNOWN_EVENTS,
   decodeEventData,
+  decodeEventFields,
   decodeEventName,
   type ContractEventLike,
 } from "./lib/events";
@@ -262,11 +279,35 @@ export async function recordDeadLetter(
 // Dispatch + handlers
 // ---------------------------------------------------------------------------
 
+/**
+ * Each event's `#[topic]` data fields, in `topic[1..]` order (docs/EVENTS.md).
+ *
+ * `created` and `funded` are deliberately absent: their topic is the client
+ * address and their `escrow_id` is an ordinary data field. Every other event
+ * carries `escrow_id` (or, for `approved`, `dispute_id`) in `topic[1]`, so
+ * decoding only the value map left those handlers with no id to look the row up
+ * by — `handleDisputeOpened`, `handleRaised`, `handleRefunded`,
+ * `handleMilestoneReleased`, `handleResolved` and `handleRated` all returned
+ * without doing anything, so the mirror silently stopped tracking the chain
+ * after funding.
+ */
+export const EVENT_TOPIC_FIELDS: Record<string, string[]> = {
+  milestone_released: ["escrow_id"],
+  milestones_updated: ["escrow_id"],
+  dispute_opened: ["escrow_id"],
+  resolved: ["escrow_id"],
+  refunded: ["escrow_id"],
+  raised: ["escrow_id"],
+  dispute_resolved: ["escrow_id"],
+  approved: ["dispute_id"],
+  rated: ["escrow_id"],
+};
+
 async function dispatchEvent(event: ContractEventLike): Promise<void> {
   const name = decodeEventName(event);
   if (!name || !KNOWN_EVENTS.has(name)) return; // unknown events are ignored
 
-  const data = decodeEventData(event);
+  const data = decodeEventFields(event, EVENT_TOPIC_FIELDS[name] ?? []);
   switch (name) {
     case "created":
       await handleCreated(data);
@@ -278,17 +319,17 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
       await handleMilestoneReleased(data);
       break;
     case "dispute_opened":
-      await handleDisputeOpened(data);
+      await handleDisputeOpened(disputeStores(), data);
       break;
     case "resolved":
     case "dispute_resolved":
       await handleResolved(data);
       break;
     case "refunded":
-      await handleRefunded(data);
+      await handleRefunded(disputeStores(), data);
       break;
     case "raised":
-      await handleRaised(data);
+      await handleRaised(disputeStores(), data);
       break;
     case "rated":
       await handleRated(data);
@@ -354,10 +395,64 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
   }
 }
 
-async function handleDisputeOpened(data: Record<string, unknown>): Promise<void> {
+// ---------------------------------------------------------------------------
+// Dispute lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * The slice of `prisma` the dispute-lifecycle handlers touch, kept structural so
+ * the event sequence is unit-testable with an in-memory store instead of a
+ * database (the same approach as `RatedStores`).
+ */
+export interface DisputeLifecycleStores {
+  job: {
+    findUnique(args: { where: { escrowId: bigint } }): Promise<{ id: string } | null>;
+    updateMany(args: {
+      where: { escrowId: bigint };
+      data: { status: JobStatus };
+    }): Promise<unknown>;
+  };
+  dispute: {
+    upsert(args: {
+      where: { jobId: string };
+      create: {
+        onChainId: bigint;
+        jobId: string;
+        raisedByAddress: string;
+        reason: string;
+      };
+      update: { onChainId: bigint; raisedByAddress: string };
+    }): Promise<unknown>;
+    updateMany(args: {
+      where: { job: { escrowId: bigint }; status: { in: DisputeStatus[] } };
+      data: { status: DisputeStatus; resolvedAt: Date };
+    }): Promise<unknown>;
+  };
+}
+
+/** The store the dispute handlers write through (see `DisputeLifecycleStores`). */
+function disputeStores(): DisputeLifecycleStores {
+  return prisma as unknown as DisputeLifecycleStores;
+}
+
+/** Dispute statuses that are still open — exactly the ones a refund has to close. */
+const OPEN_DISPUTE_STATUSES: DisputeStatus[] = ["RAISED", "UNDER_REVIEW"];
+
+/**
+ * `dispute_opened` (escrow.open_dispute) only marks the job DISPUTED.
+ *
+ * It deliberately creates no Dispute row: the on-chain dispute has no id or
+ * reason until `dispute.raise`, so there is nothing to record yet. The row is
+ * created when `raised` is indexed below, which is why a job can be DISPUTED
+ * with an empty `disputes[]` between the two transactions (docs/DISPUTES.md).
+ */
+export async function handleDisputeOpened(
+  db: DisputeLifecycleStores,
+  data: Record<string, unknown>,
+): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
-  await prisma.job.updateMany({ where: { escrowId }, data: { status: "DISPUTED" } });
+  await db.job.updateMany({ where: { escrowId }, data: { status: "DISPUTED" } });
 }
 
 async function handleResolved(data: Record<string, unknown>): Promise<void> {
@@ -370,29 +465,78 @@ async function handleResolved(data: Record<string, unknown>): Promise<void> {
   });
 }
 
-async function handleRefunded(data: Record<string, unknown>): Promise<void> {
+/**
+ * `refunded` is emitted by both `reclaim_expired` (Active → Refunded) and
+ * `reclaim_after_dispute_timeout` (Disputed → Refunded).
+ *
+ * The escrow is now terminal, so no later event will ever close the dispute it
+ * was tied to. Left alone, the row keeps status RAISED/UNDER_REVIEW with
+ * `resolvedAt` null forever and every "open disputes" view reports a job whose
+ * funds already went back to the client. So the refund also closes the open
+ * disputes for that escrow: status REFUNDED (not RESOLVED, which means a panel
+ * ruled) with `resolvedAt` stamped. `reclaim_expired` runs from Active and so
+ * matches no dispute — that is expected.
+ */
+export async function handleRefunded(
+  db: DisputeLifecycleStores,
+  data: Record<string, unknown>,
+): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
-  await prisma.job.updateMany({ where: { escrowId }, data: { status: "REFUNDED" } });
+
+  await db.job.updateMany({ where: { escrowId }, data: { status: "REFUNDED" } });
+
+  await db.dispute.updateMany({
+    where: { job: { escrowId }, status: { in: OPEN_DISPUTE_STATUSES } },
+    data: { status: "REFUNDED", resolvedAt: new Date() },
+  });
 }
 
-async function handleRaised(data: Record<string, unknown>): Promise<void> {
+/**
+ * `raised` (dispute.raise) attaches the on-chain dispute id to the job's
+ * dispute, creating the row if the API never recorded one.
+ *
+ * Upserted on `jobId`, not on `onChainId`: `POST /api/disputes` writes the row
+ * (with the reason) before the contract has minted an id, so a row already
+ * exists for the job and its `onChainId` is still null. Keying on `onChainId`
+ * alone — as this handler used to — matches nothing and inserts a second row,
+ * leaving the job with one dispute holding the reason and another holding the
+ * id. One row per job is also a database constraint now (`Dispute.jobId` is
+ * unique), which is the same invariant `dispute.raise` enforces on-chain
+ * (`AlreadyRaised` for a second raise on the same escrow).
+ *
+ * The event wins for the two fields it carries: `raised_by` is the address the
+ * contract validated as a party, while the row's `raisedByAddress` is merely
+ * whoever called `POST /api/disputes`, and the two differ when one party records
+ * the dispute and the other raises it. `reason` is not in the event, so the
+ * stored one is left untouched — it is the only copy.
+ *
+ * Idempotent: re-running it for the same event re-writes the same values, so a
+ * cursor rewind cannot duplicate or corrupt the row.
+ */
+export async function handleRaised(
+  db: DisputeLifecycleStores,
+  data: Record<string, unknown>,
+): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   const disputeId = asBigInt(data.dispute_id);
   if (escrowId === null || disputeId === null) return;
 
-  const job = await prisma.job.findUnique({ where: { escrowId } });
+  const job = await db.job.findUnique({ where: { escrowId } });
   if (!job) return;
 
-  await prisma.dispute.upsert({
-    where: { onChainId: disputeId },
+  await db.dispute.upsert({
+    where: { jobId: job.id },
     create: {
       onChainId: disputeId,
       jobId: job.id,
       raisedByAddress: String(data.raised_by ?? ""),
       reason: "",
     },
-    update: {},
+    update: {
+      onChainId: disputeId,
+      raisedByAddress: String(data.raised_by ?? ""),
+    },
   });
 }
 

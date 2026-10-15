@@ -53,6 +53,14 @@ model Job {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   expiresAt       DateTime?
+
+  // GET /api/jobs: `WHERE status = ? ORDER BY createdAt DESC LIMIT/OFFSET`.
+  // A composite index serves filter + ordering in one range scan (issue #92).
+  @@index([status, createdAt])
+  // GET /api/jobs?client=… / ?freelancer=… join through these FKs, and
+  // GET /api/users/:address counts jobsAsClient / jobsAsFreelancer by them.
+  @@index([clientId])
+  @@index([freelancerId])
 }
 
 enum JobStatus {
@@ -77,6 +85,10 @@ model Milestone {
   status      MilestoneStatus @default(PENDING)
   deadline    DateTime?
   releasedAt  DateTime?
+
+  // Every `include: { milestones: true }` (job list/detail, escrow routes,
+  // indexer milestone-release handling) joins on jobId.
+  @@index([jobId])
 }
 
 enum MilestoneStatus {
@@ -91,7 +103,18 @@ model Dispute {
   id               String        @id @default(cuid())
   /// On-chain dispute ID from dispute contract
   onChainId        BigInt?       @unique
-  jobId            String
+  /// One dispute per job, which is the invariant the contracts already enforce:
+  /// `dispute.raise` stores `EscrowDispute(escrow_id)` and returns
+  /// `AlreadyRaised` for a second raise, and a job has exactly one escrow.
+  ///
+  /// Unique rather than merely indexed because the row is written twice by two
+  /// different writers: `POST /api/disputes` creates it (with the reason, since
+  /// the `Raised` event carries none) before an on-chain id exists, and the
+  /// indexer's `raised` handler / `POST /:id/sync` attach the id afterwards.
+  /// Keying that second write on the job instead of on the id is what keeps a
+  /// disputed job from ending up with two rows — the bug fixed in #86. It is
+  /// also the unique key the indexer upserts on.
+  jobId            String        @unique
   job              Job           @relation(fields: [jobId], references: [id])
   raisedByAddress  String
   reason           String
@@ -100,12 +123,20 @@ model Dispute {
   freelancerShare  Decimal?
   resolvedAt       DateTime?
   createdAt        DateTime      @default(now())
+
+  // No @@index([jobId]): GET /api/jobs/:id `include: { disputes: true }` and the
+  // indexer's `dispute.updateMany({ where: { job: { escrowId } } })` both read by
+  // jobId, and the unique constraint above is that index.
 }
 
 enum DisputeStatus {
   RAISED
   UNDER_REVIEW
+  /// A panel ruled and the escrow was resolved with a split.
   RESOLVED
+  /// The escrow was refunded (expiry or dispute timelock) with no ruling.
+  /// Terminal: a refunded dispute is no longer open.
+  REFUNDED
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +153,13 @@ model Rating {
   score      Int      // 1–5
   comment    String?
   createdAt  DateTime @default(now())
+
+  // GET /api/jobs/:id `include: { ratings: true }` joins on jobId.
+  @@index([jobId])
+  // GET /api/reputation/:address aggregates `WHERE rateeId = ?` (via stellarAddress).
+  @@index([rateeId])
+  // Ratings submitted by a rater (issue #92; also the prefix of the unique below).
+  @@index([raterId])
 
   @@unique([raterId, jobId])
 }
