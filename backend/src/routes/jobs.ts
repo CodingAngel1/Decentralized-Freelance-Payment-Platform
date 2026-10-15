@@ -13,7 +13,14 @@ import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { AppError } from "../middleware/errorHandler";
-import { getAsset, UnknownAssetError } from "../lib/assets";
+import {
+  formatAmount,
+  getAsset,
+  sumAmounts,
+  toBaseUnits,
+  UnknownAssetError,
+  type AssetInfo,
+} from "../lib/assets";
 import { createJobSchema } from "../lib/schemas";
 
 export const jobsRouter = Router();
@@ -46,9 +53,9 @@ jobsRouter.post("/", requireAuth, validate(createJobSchema), async (req, res, ne
       typeof createJobSchema
     >;
 
-    let assetSymbol: string;
+    let assetInfo: AssetInfo;
     try {
-      assetSymbol = getAsset(asset).symbol;
+      assetInfo = getAsset(asset);
     } catch (err) {
       if (err instanceof UnknownAssetError) throw new AppError(400, err.message);
       throw err;
@@ -59,20 +66,32 @@ jobsRouter.post("/", requireAuth, validate(createJobSchema), async (req, res, ne
     });
     if (!client) throw new AppError(404, "User not found — call /api/users/auth first");
 
-    const totalAmountUsdc = milestones.reduce((sum, m) => sum + m.amountUsdc, 0);
+    // Sum in the asset's integer base units and format once. Adding whole-unit
+    // decimals as JavaScript numbers carries float error into the DECIMAL(65,30)
+    // column: two `0.1` milestones became `0.30000000000000004`, which is what
+    // GET /api/jobs then returned and the dashboard displayed.
+    const totalAmountUsdc = formatAmount(
+      sumAmounts(milestones.map((m) => m.amountUsdc), assetInfo.decimals),
+      assetInfo.decimals,
+    );
 
     const job = await prisma.job.create({
       data: {
         title,
         description,
-        asset: assetSymbol,
+        asset: assetInfo.symbol,
         totalAmountUsdc,
         clientId: client.id,
         expiresAt: expiresAt ? new Date(expiresAt) : undefined,
         milestones: {
           create: milestones.map((m, i) => ({
             index: i,
-            amountUsdc: m.amountUsdc,
+            // Store each amount at the asset's own precision so the milestones
+            // and the total are consistent with the on-chain base units.
+            amountUsdc: formatAmount(
+              toBaseUnits(m.amountUsdc, assetInfo.decimals),
+              assetInfo.decimals,
+            ),
             description: m.description,
             deadline: m.deadline ? new Date(m.deadline) : undefined,
           })),
