@@ -30,7 +30,7 @@ import {
   server,
   type MilestoneInput,
 } from "../lib/stellar";
-import { friendlyError } from "../lib/errors";
+import { friendlyError, parseContractErrorCode } from "../lib/errors";
 import { useWallet } from "./wallet-context";
 
 export interface MilestoneView {
@@ -72,14 +72,32 @@ export interface CreateAndFundResult {
 }
 
 /** The kinds of operation the hook can have in flight. */
-export type OpKind = "create" | "release" | "dispute" | "read" | "reputation";
+export type OpKind =
+  | "create"
+  | "release"
+  | "dispute"
+  | "read"
+  | "reputation"
+  | "rate";
 
-const WRITE_KINDS: OpKind[] = ["create", "release", "dispute"];
+const WRITE_KINDS: OpKind[] = ["create", "release", "dispute", "rate"];
+
+/**
+ * The last operation that failed, so a caller can react to a specific contract
+ * error (e.g. hide the rating form when the contract returns `AlreadyRated`)
+ * without re-parsing the friendly message.
+ */
+export interface FailureInfo {
+  kind: OpKind;
+  /** The `#[contracterror]` discriminant, or `null` for a non-contract error. */
+  code: number | null;
+}
 
 export function useEscrow() {
   const { publicKey, connect, sign } = useWallet();
   const [pendingOps, setPendingOps] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [lastFailure, setLastFailure] = useState<FailureInfo | null>(null);
   // Source of truth for in-flight ops; the state mirrors it for rendering, and
   // the ref stays current inside async callbacks (e.g. the poll in JobDetail).
   const pendingRef = useRef<Set<string>>(new Set());
@@ -101,12 +119,17 @@ export function useEscrow() {
       pendingRef.current.add(id);
       syncPending();
       setError(null);
+      setLastFailure(null);
       try {
         const pk = publicKey ?? (await connect());
         if (!pk) throw new Error("Wallet not connected");
         return await fn(pk);
       } catch (e) {
         setError(friendlyError(e));
+        setLastFailure({
+          kind,
+          code: parseContractErrorCode(e instanceof Error ? e.message : String(e)),
+        });
         return undefined;
       } finally {
         pendingRef.current.delete(id);
@@ -206,6 +229,27 @@ export function useEscrow() {
     [run, submit],
   );
 
+  /**
+   * Rate the counterparty once the escrow is completed.
+   *
+   * `reputation.submit(rater, ratee, escrow_id, score)` verifies on-chain that
+   * the job finished and that the two addresses are its participants, so the UI
+   * only needs to send the score. The contract rejects a second rating from the
+   * same wallet with `AlreadyRated` (code 5), which surfaces on `lastFailure`.
+   */
+  const submitRating = useCallback(
+    (escrowId: bigint, ratee: string, score: number) =>
+      run("rate", `${escrowId}:${ratee}`, (pk) =>
+        submit(pk, CONTRACT_ADDRESSES.reputation, "submit", [
+          scAddress(pk),
+          scAddress(ratee),
+          scU64(escrowId),
+          scU32(score),
+        ]),
+      ),
+    [run, submit],
+  );
+
   /** Read a single escrow (view). */
   const getEscrow = useCallback(
     (escrowId: bigint) =>
@@ -230,11 +274,13 @@ export function useEscrow() {
     createAndFund,
     releaseMilestone,
     openDispute,
+    submitRating,
     getEscrow,
     getReputation,
     pendingOps,
     isPending,
     hasPendingWrite,
     error,
+    lastFailure,
   };
 }

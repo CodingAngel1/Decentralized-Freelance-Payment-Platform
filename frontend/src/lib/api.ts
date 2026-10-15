@@ -133,3 +133,47 @@ export async function linkEscrowId(
   });
   if (!res.ok) throw new Error(`Could not link the escrow (HTTP ${res.status})`);
 }
+
+export interface SubmitRatingInput {
+  /** Off-chain job id — the API keys the rating on this, not the escrow id. */
+  jobId: string;
+  rateeAddress: string;
+  score: number;
+  comment?: string;
+}
+
+export interface SubmittedRating {
+  id: string;
+  jobId: string;
+  score: number;
+  comment: string | null;
+}
+
+/**
+ * Record a rating off-chain and receive the server-built `reputation.submit`
+ * transaction.
+ *
+ * The server keys the row on `(rater, job)` — the same key the indexer uses for
+ * the `rated` event — so the two converge instead of duplicating.
+ *
+ * The returned `xdr` is not used by the app: the rating is submitted through
+ * `useEscrow.submitRating`, which encodes the arguments itself (`scU32` score),
+ * so the on-chain call is correct regardless of the API's builder. This client
+ * is for the off-chain record (the contract stores no comment) and for
+ * API-first integrators.
+ */
+export async function submitRating(
+  input: SubmitRatingInput,
+  token: string,
+): Promise<{ rating: SubmittedRating; xdr: string }> {
+  const res = await fetch(`${API_BASE_URL}/api/reputation`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`Could not record the rating (HTTP ${res.status})`);
+  return (await res.json()) as { rating: SubmittedRating; xdr: string };
+}

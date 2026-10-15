@@ -2,29 +2,77 @@
  * JobDetail.tsx
  *
  * Shows milestone progress for a single escrow job.
- * The client can release milestones or open a dispute; the freelancer can see
- * payment status. State is refreshed by polling every 5s (Stellar finality).
+ * The client can release milestones or open a dispute; either participant can
+ * rate the counterparty once the job is Completed. State is refreshed by polling
+ * every 5s (Stellar finality).
+ *
+ * Contributor Notes:
+ * - The route param is the *on-chain escrow id*, while `POST /api/reputation`
+ *   keys its row on the off-chain job id. `findJobIdByEscrow` bridges the two,
+ *   and only when the optional comment needs to be stored — the contract itself
+ *   keeps no comment.
+ * - The rating is written straight to `reputation.submit` (see
+ *   `useEscrow.submitRating`) so the argument types are correct and the tx hash
+ *   is available for the explorer link. The indexer mirrors the resulting
+ *   `rated` event into the database, converging with any row the API created.
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
 import { assetForContractId, fromBaseUnits } from "../lib/assets";
+import { authenticate, fetchJobs, submitRating as recordRating } from "../lib/api";
 
 const POLL_MS = 5_000;
 
+/** `ReputationError::AlreadyRated` (contracts/reputation/src/lib.rs). */
+const ALREADY_RATED = 5;
+
+const SCORES = [1, 2, 3, 4, 5];
+
+/**
+ * JobDetail is keyed by the on-chain escrow id; the reputation API keys a rating
+ * on the off-chain job id, so resolve one to the other through the job list.
+ */
+async function findJobIdByEscrow(escrowId: bigint, address: string): Promise<string | null> {
+  const [asClient, asFreelancer] = await Promise.all([
+    fetchJobs({ client: address, limit: 100 }),
+    fetchJobs({ freelancer: address, limit: 100 }),
+  ]);
+  const match = [...asClient, ...asFreelancer].find(
+    (job) =>
+      job.escrowId !== null && job.escrowId !== undefined && BigInt(job.escrowId) === escrowId,
+  );
+  return match?.id ?? null;
+}
+
 export default function JobDetail() {
   const { id } = useParams<{ id: string }>();
-  const { getEscrow, releaseMilestone, openDispute, isPending, hasPendingWrite, error } =
-    useEscrow();
-  const { publicKey, connect } = useWallet();
+  const {
+    getEscrow,
+    releaseMilestone,
+    openDispute,
+    submitRating,
+    isPending,
+    hasPendingWrite,
+    error,
+    lastFailure,
+  } = useEscrow();
+  const { publicKey, connect, signMessage } = useWallet();
   const [escrow, setEscrow] = useState<EscrowView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [lastHash, setLastHash] = useState<string | null>(null);
+
+  const [score, setScore] = useState(0);
+  const [comment, setComment] = useState("");
+  const [rated, setRated] = useState(false);
+  // Latched: the contract rejected the rating because this wallet already rated.
+  const [alreadyRated, setAlreadyRated] = useState(false);
+  const [commentNote, setCommentNote] = useState<string | null>(null);
 
   const escrowId = id ? BigInt(id) : null;
 
@@ -42,6 +90,14 @@ export default function JobDetail() {
     const timer = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  // The 5s poll resets `lastFailure` on every read, so latch the rejection
+  // instead of reading the hook's state directly.
+  useEffect(() => {
+    if (lastFailure?.kind === "rate" && lastFailure.code === ALREADY_RATED) {
+      setAlreadyRated(true);
+    }
+  }, [lastFailure]);
 
   if (escrowId === null) {
     return (
@@ -61,6 +117,46 @@ export default function JobDetail() {
   const isFreelancer = publicKey !== null && escrow?.freelancer === publicKey;
   const isParticipant = isClient || isFreelancer;
   const isActive = escrow?.status === "Active";
+  const isCompleted = escrow?.status === "Completed";
+  /** The address the connected participant would rate. */
+  const counterparty = escrow ? (isClient ? escrow.freelancer : escrow.client) : null;
+  const canRate = isParticipant && isCompleted && counterparty !== null;
+  const showRatingForm = canRate && !rated && !alreadyRated;
+  const ratingDone = canRate && (rated || alreadyRated);
+
+  /** Store the optional comment off-chain; the rating itself is already on-chain. */
+  async function saveComment(text: string, ratee: string) {
+    if (escrowId === null || !publicKey) return;
+    try {
+      const jobId = await findJobIdByEscrow(escrowId, publicKey);
+      if (!jobId) {
+        setCommentNote(
+          "Rating submitted. The comment was not saved — this job has no off-chain record.",
+        );
+        return;
+      }
+      const token = await authenticate(publicKey, signMessage);
+      await recordRating({ jobId, rateeAddress: ratee, score, comment: text }, token);
+    } catch (err) {
+      setCommentNote(
+        `Rating submitted, but the comment was not saved: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  async function handleRate(e: React.FormEvent) {
+    e.preventDefault();
+    if (escrowId === null || !counterparty || score < 1) return;
+    setCommentNote(null);
+    const res = await submitRating(escrowId, counterparty, score);
+    if (!res) return; // the hook surfaced a friendly error
+    setLastHash(res.hash);
+    setRated(true);
+    const text = comment.trim();
+    if (text) void saveComment(text, counterparty);
+  }
 
   return (
     <Layout>
@@ -138,6 +234,56 @@ export default function JobDetail() {
           {escrow.status === "Disputed" && (
             <p className="muted">This escrow is frozen pending arbitration.</p>
           )}
+
+          {showRatingForm && (
+            <section>
+              <h2>Rate your counterparty</h2>
+              <p className="muted">
+                Ratings are recorded on-chain and cannot be changed or removed.
+              </p>
+              <form onSubmit={handleRate}>
+                <fieldset disabled={isPending("rate")}>
+                  <legend>Score</legend>
+                  {SCORES.map((n) => (
+                    <label key={n}>
+                      <input
+                        type="radio"
+                        name="score"
+                        value={n}
+                        checked={score === n}
+                        onChange={() => setScore(n)}
+                      />{" "}
+                      {n}★
+                    </label>
+                  ))}
+                </fieldset>
+                <p>
+                  <label>
+                    Comment (optional)
+                    <br />
+                    <textarea
+                      value={comment}
+                      onChange={(e) => setComment(e.target.value)}
+                      maxLength={500}
+                      rows={2}
+                      cols={60}
+                    />
+                  </label>
+                </p>
+                <button type="submit" disabled={score < 1 || isPending("rate")}>
+                  {isPending("rate") ? "Submitting…" : "Submit rating"}
+                </button>
+              </form>
+            </section>
+          )}
+
+          {ratingDone && (
+            <p role="status">
+              {alreadyRated ? "You've already rated this job." : "Thanks — your rating was submitted."}{" "}
+              <Link to={`/profile/${counterparty}`}>View reputation →</Link>
+            </p>
+          )}
+          {commentNote && <p className="muted">{commentNote}</p>}
 
           {lastHash && (
             <p>
