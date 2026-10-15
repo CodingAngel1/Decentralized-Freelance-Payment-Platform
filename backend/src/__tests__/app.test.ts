@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
 import { isValidStellarAddress } from "../lib/stellarAddress";
 import { createJobSchema } from "../lib/schemas";
+import { jsonReplacer } from "../lib/json";
 
 // Pure unit tests against real modules; no DB or env vars required.
 // Integration tests requiring a live DB belong in a separate test suite
@@ -74,5 +75,22 @@ describe("POST /api/jobs request validation", () => {
 
   it("keeps a caller-chosen asset symbol for the registry to look up", () => {
     expect(createJobSchema.parse({ ...valid, asset: "XLM" }).asset).toBe("XLM");
+  });
+});
+
+describe("jsonReplacer", () => {
+  it("serializes a BigInt column as a string instead of throwing", () => {
+    // Prisma returns escrowId as a BigInt; JSON.stringify would otherwise throw
+    // and turn a successful write into a 500.
+    const job = { id: "job_1", escrowId: 7n, onChainId: 9_007_199_254_740_993n };
+
+    expect(JSON.stringify(job, jsonReplacer)).toBe(
+      '{"id":"job_1","escrowId":"7","onChainId":"9007199254740993"}',
+    );
+  });
+
+  it("leaves other values, including a Decimal's own JSON form, untouched", () => {
+    const row = { total: "2.5", nested: { released: false }, missing: null };
+    expect(JSON.stringify(row, jsonReplacer)).toBe(JSON.stringify(row));
   });
 });
