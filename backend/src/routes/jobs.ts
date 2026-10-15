@@ -14,23 +14,9 @@ import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { AppError } from "../middleware/errorHandler";
 import { getAsset, UnknownAssetError } from "../lib/assets";
+import { createJobSchema } from "../lib/schemas";
 
 export const jobsRouter = Router();
-
-const milestoneSchema = z.object({
-  description: z.string().optional(),
-  amountUsdc: z.number().positive(),
-  deadline: z.string().datetime().optional(),
-});
-
-const createJobSchema = z.object({
-  title: z.string().min(3).max(120),
-  description: z.string().min(10),
-  milestones: z.array(milestoneSchema).min(1),
-  expiresAt: z.string().datetime().optional(),
-  /** Asset symbol the job pays in; must be in the registry. Defaults to USDC. */
-  asset: z.string().default("USDC"),
-});
 
 // GET /api/jobs
 jobsRouter.get("/", async (req, res, next) => {
