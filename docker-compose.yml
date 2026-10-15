@@ -10,6 +10,11 @@
 #   VITE_ESCROW_CONTRACT_ID=C... docker compose up --build
 #
 # Testnet values live in deployments/testnet.json.
+#
+# Both service containers run as non-root (issue #112): the backend drops to
+# the image's `node` user (uid 1000), the frontend uses nginx-unprivileged
+# (uid 101), which is why the frontend listens on 8080 — a non-root process
+# cannot bind port 80.
 
 services:
   postgres:
@@ -69,7 +74,8 @@ services:
     depends_on:
       - backend
     ports:
-      - "5173:80"
+      # Container listens on 8080 (unprivileged nginx); host side stays 5173.
+      - "5173:8080"
 
 volumes:
   postgres_data:
