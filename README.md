@@ -80,7 +80,7 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | USDC configuration | ❌ Not wired on testnet yet — the demo uses the XLM SAC |
 | Security audit | ❌ Not audited |
 
-Scoped work is tracked in [`docs/wave-issues/`](./docs/wave-issues/).
+Scoped work is tracked in the [issue tracker](https://github.com/vatal-system/Decentralized-Freelance-Payment-Platform/issues); design notes for issues #2-#18 live in [`docs/wave-issues/`](./docs/wave-issues/).
 
 ## Architecture
 
@@ -380,7 +380,7 @@ Full checklist, environment tables, and post-deploy verification queries:
 | [`docs/ASSETS.md`](./docs/ASSETS.md) | Payment-asset registry and how to add one |
 | [`docs/DISPUTES.md`](./docs/DISPUTES.md) | Arbitrator panel, thresholds, and the dispute timelock |
 | [`docs/REPUTATION.md`](./docs/REPUTATION.md) | Rating rules, weighting, and anti-spam |
-| [`docs/wave-issues/`](./docs/wave-issues/) | The scoped work backlog these features came from |
+| [`docs/wave-issues/`](./docs/wave-issues/) | Design notes for issues #2-#18 (all implemented) |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Setup, conventions, contract reference tables |
 | [`SECURITY.md`](./SECURITY.md) | How to report a vulnerability |
 | [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) | Community expectations |

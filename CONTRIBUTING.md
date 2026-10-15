@@ -102,7 +102,7 @@ frontend/        # React 18 + TypeScript + Vite
 backend/         # Express + Prisma + Zod
 scripts/         # testnet deploy + demo
 deployments/     # deployed contract IDs (testnet)
-docs/            # testnet notes; wave-issues/ holds the issue backlog
+docs/            # testnet notes; wave-issues/ = design notes for issues #2-#18
 ```
 
 ---
@@ -258,7 +258,9 @@ larger into a new issue instead of growing the PR.
 Anything that would need a security audit to merge safely should be raised as a
 design issue first rather than a ready-to-merge task.
 
-The scoped backlog lives in [`docs/wave-issues/`](./docs/wave-issues/).
+Scoped work lives in the [issue tracker](https://github.com/vatal-system/Decentralized-Freelance-Payment-Platform/issues);
+the design notes behind issues #2-#18 live in
+[`docs/wave-issues/`](./docs/wave-issues/).
 
 ---
 

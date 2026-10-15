@@ -2,7 +2,7 @@
  * Profile.tsx
  *
  * Displays a user's on-chain reputation aggregate (total score + count).
- * Job history will come from the backend indexer (see docs/wave-issues/).
+ * Job history will come from the backend indexer (see issue #17).
  */
 
 import { useEffect, useState } from "react";
