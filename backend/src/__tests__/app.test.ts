@@ -76,6 +76,24 @@ describe("POST /api/jobs request validation", () => {
   it("keeps a caller-chosen asset symbol for the registry to look up", () => {
     expect(createJobSchema.parse({ ...valid, asset: "XLM" }).asset).toBe("XLM");
   });
+
+  it("accepts an exact decimal string amount", () => {
+    // A string reaches the server as typed; the route sums it in base units so
+    // 0.1 + 0.2 stores 0.3 rather than 0.30000000000000004.
+    const parsed = createJobSchema.parse({
+      ...valid,
+      milestones: [{ amountUsdc: "0.1" }, { amountUsdc: "0.2" }],
+    });
+    expect(parsed.milestones.map((m) => m.amountUsdc)).toEqual(["0.1", "0.2"]);
+  });
+
+  it("rejects a zero, negative, or malformed string amount", () => {
+    for (const amountUsdc of ["0", "0.0", "-1", "1e3", "abc", ""]) {
+      expect(
+        createJobSchema.safeParse({ ...valid, milestones: [{ amountUsdc }] }).success,
+      ).toBe(false);
+    }
+  });
 });
 
 describe("jsonReplacer", () => {

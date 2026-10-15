@@ -63,7 +63,11 @@ export async function fetchJobs(
 
 export interface CreateJobMilestoneInput {
   description?: string;
-  amountUsdc: number;
+  /**
+   * Whole units of the job asset. A decimal string is exact and preferred; a
+   * number is accepted but is already a binary float by the time it arrives.
+   */
+  amountUsdc: number | string;
   deadline?: string;
 }
 

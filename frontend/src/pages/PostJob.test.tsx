@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 // Hoisted so the vi.mock factories below can reference them.
 const h = vi.hoisted(() => ({
@@ -91,5 +91,35 @@ describe("PostJob asset picker", () => {
     expect(
       (screen.getByRole("button", { name: /Create & Fund Escrow/ }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+});
+
+/** Render the form with milestone amounts filled in and read the Total line. */
+async function renderTotal(amounts: string[]): Promise<string> {
+  await renderWithEnv({});
+  for (let i = 1; i < amounts.length; i++) {
+    fireEvent.click(screen.getByRole("button", { name: "Add milestone" }));
+  }
+  amounts.forEach((amount, i) => {
+    fireEvent.change(screen.getByLabelText(new RegExp(`Amount #${i + 1}`)), {
+      target: { value: amount },
+    });
+  });
+  return screen.getByText(/^Total:/).textContent ?? "";
+}
+
+describe("PostJob total", () => {
+  it("shows the exact decimal sum, not a float artefact", async () => {
+    const text = await renderTotal(["0.1", "0.1", "0.1"]);
+    expect(text).toContain("0.3");
+    expect(text).not.toContain("0.30000000000000004");
+  });
+
+  it("sums whole and fractional amounts exactly", async () => {
+    expect(await renderTotal(["1", "0.5"])).toContain("1.5");
+  });
+
+  it("ignores empty amounts while the form is being filled in", async () => {
+    expect(await renderTotal(["0.2", ""])).toContain("0.2");
   });
 });
