@@ -13,10 +13,10 @@ import {
   SorobanRpc,
   TransactionBuilder,
   BASE_FEE,
-  nativeToScVal,
-  Address,
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
+import { buildReputationSubmitArgs } from "../lib/scval";
+import { isValidStellarAddress } from "../lib/stellarAddress";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -31,7 +31,7 @@ const networkPassphrase =
 // POST /api/reputation
 const submitSchema = z.object({
   jobId: z.string(),
-  rateeAddress: z.string().startsWith("G"),
+  rateeAddress: z.string().refine(isValidStellarAddress, "Invalid Stellar address"),
   score: z.number().int().min(1).max(5),
   comment: z.string().max(500).optional(),
 });
@@ -60,10 +60,7 @@ reputationRouter.post("/", requireAuth, validate(submitSchema), async (req, res,
       .addOperation(
         contract.call(
           "submit",
-          Address.fromString(raterAddress).toScVal(),
-          Address.fromString(rateeAddress).toScVal(),
-          nativeToScVal(job.escrowId),
-          nativeToScVal(score),
+          ...buildReputationSubmitArgs(raterAddress, rateeAddress, job.escrowId, score),
         ),
       )
       .setTimeout(30)

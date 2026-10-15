@@ -20,11 +20,10 @@ import {
   SorobanRpc,
   TransactionBuilder,
   BASE_FEE,
-  nativeToScVal,
-  Address,
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
 import { prisma } from "../db";
+import { buildArbitrateArgs, buildOpenDisputeArgs } from "../lib/scval";
 import { isListed, parseList } from "../lib/access";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -73,11 +72,7 @@ disputesRouter.post("/", requireAuth, validate(raiseSchema), async (req, res, ne
     const escrowContract = new Contract(config.ESCROW_CONTRACT_ID);
     const xdr = await buildTx(
       addr,
-      escrowContract.call(
-        "open_dispute",
-        nativeToScVal(job.escrowId),
-        Address.fromString(addr).toScVal(),
-      ),
+      escrowContract.call("open_dispute", ...buildOpenDisputeArgs(job.escrowId, addr)),
     );
 
     // Persist dispute record
@@ -140,9 +135,11 @@ disputesRouter.post("/:id/resolve", requireAuth, validate(resolveSchema), async 
       res.locals.stellarAddress,
       disputeContract.call(
         "arbitrate",
-        nativeToScVal(dispute.onChainId),
-        nativeToScVal(BigInt(Math.round(clientShare * 1e7))),
-        nativeToScVal(BigInt(Math.round(freelancerShare * 1e7))),
+        ...buildArbitrateArgs(
+          dispute.onChainId,
+          BigInt(Math.round(clientShare * 1e7)),
+          BigInt(Math.round(freelancerShare * 1e7)),
+        ),
       ),
     );
 

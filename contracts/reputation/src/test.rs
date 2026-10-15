@@ -7,7 +7,9 @@
 
 use crate::{ReputationContract, ReputationContractClient, ReputationError};
 use escrow::{EscrowContract, EscrowContractClient, Milestone};
+use interface::{EscrowData, EscrowError, EscrowStatus};
 use soroban_sdk::{
+    contract, contractimpl, contracttype,
     testutils::{Address as _, Events as _, Ledger},
     token::StellarAssetClient,
     xdr, Address, Env, Map, Symbol, TryFromVal, Val, Vec,
@@ -298,6 +300,110 @@ fn aggregate_for_unknown_address_is_empty() {
     assert_eq!(agg.count, 0);
     assert_eq!(agg.total_score, 0);
     assert_eq!(agg.weight, 0);
+}
+
+#[test]
+fn aggregate_stays_correct_with_many_ratings() {
+    let f = setup();
+
+    // 60 distinct raters, each completing a 10-unit job. The aggregate that
+    // `submit` maintains has to stay exact as it grows.
+    let mut expected_total: u64 = 0;
+    for i in 0..60u32 {
+        let payer = Address::generate(&f.env);
+        let id = f.completed_with(&payer, 10);
+        let score = (i % 5) + 1; // 1..=5
+        f.rep_client().submit(&payer, &f.freelancer, &id, &score);
+        expected_total += (score as u64) * 10;
+    }
+
+    let agg = f.rep_client().get_aggregate(&f.freelancer);
+    assert_eq!(agg.count, 60);
+    assert_eq!(agg.weight, 600);
+    assert_eq!(agg.total_score, expected_total);
+}
+
+// ---------------------------------------------------------------------------
+// A switchable escrow, to prove `get_aggregate` never calls it
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+enum MockKey {
+    Escrow,
+    Failing,
+}
+
+/// Minimal escrow stand-in for one `Completed` job. It can be switched to
+/// erroring on `get`, so that only a reputation contract that does **not**
+/// cross-call the escrow can still answer a read.
+#[contract]
+pub struct MockEscrow;
+
+#[contractimpl]
+impl MockEscrow {
+    pub fn init(env: Env, escrow: EscrowData) {
+        env.storage().instance().set(&MockKey::Escrow, &escrow);
+        env.storage().instance().set(&MockKey::Failing, &false);
+    }
+
+    pub fn set_failing(env: Env, failing: bool) {
+        env.storage().instance().set(&MockKey::Failing, &failing);
+    }
+
+    pub fn get(env: Env, _escrow_id: u64) -> Result<EscrowData, EscrowError> {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&MockKey::Failing)
+            .unwrap_or(false)
+        {
+            return Err(EscrowError::NotFound);
+        }
+        env.storage()
+            .instance()
+            .get(&MockKey::Escrow)
+            .ok_or(EscrowError::NotFound)
+    }
+}
+
+#[test]
+fn get_aggregate_does_not_call_the_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let admin = Address::generate(&env);
+
+    let escrow = env.register(MockEscrow, ());
+    MockEscrowClient::new(&env, &escrow).init(&EscrowData {
+        client: client.clone(),
+        freelancer: freelancer.clone(),
+        token: Address::generate(&env),
+        total_amount: 1_000,
+        milestones: Vec::new(&env),
+        status: EscrowStatus::Completed,
+        created_at: 0,
+        expiry: 10_000,
+    });
+
+    let reputation = env.register(ReputationContract, ());
+    let rep = ReputationContractClient::new(&env, &reputation);
+    rep.init(&admin, &escrow);
+
+    rep.submit(&client, &freelancer, &0, &5);
+    assert_eq!(rep.get_aggregate(&freelancer).count, 1);
+
+    // Take the escrow away. A read that still fetched the weight from it would
+    // drop the rating (the derived implementation returned a zero aggregate
+    // here); the maintained aggregate must be unaffected.
+    MockEscrowClient::new(&env, &escrow).set_failing(&true);
+
+    let agg = rep.get_aggregate(&freelancer);
+    assert_eq!(agg.count, 1);
+    assert_eq!(agg.weight, 1_000);
+    assert_eq!(agg.total_score, 5_000);
 }
 
 // ---------------------------------------------------------------------------
