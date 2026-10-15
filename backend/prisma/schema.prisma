@@ -53,6 +53,14 @@ model Job {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   expiresAt       DateTime?
+
+  // GET /api/jobs: `WHERE status = ? ORDER BY createdAt DESC LIMIT/OFFSET`.
+  // A composite index serves filter + ordering in one range scan (issue #92).
+  @@index([status, createdAt])
+  // GET /api/jobs?client=… / ?freelancer=… join through these FKs, and
+  // GET /api/users/:address counts jobsAsClient / jobsAsFreelancer by them.
+  @@index([clientId])
+  @@index([freelancerId])
 }
 
 enum JobStatus {
@@ -77,6 +85,10 @@ model Milestone {
   status      MilestoneStatus @default(PENDING)
   deadline    DateTime?
   releasedAt  DateTime?
+
+  // Every `include: { milestones: true }` (job list/detail, escrow routes,
+  // indexer milestone-release handling) joins on jobId.
+  @@index([jobId])
 }
 
 enum MilestoneStatus {
@@ -100,6 +112,10 @@ model Dispute {
   freelancerShare  Decimal?
   resolvedAt       DateTime?
   createdAt        DateTime      @default(now())
+
+  // GET /api/jobs/:id `include: { disputes: true }` and the indexer's
+  // `dispute.updateMany({ where: { job: { escrowId } } })` join on jobId.
+  @@index([jobId])
 }
 
 enum DisputeStatus {
@@ -122,6 +138,13 @@ model Rating {
   score      Int      // 1–5
   comment    String?
   createdAt  DateTime @default(now())
+
+  // GET /api/jobs/:id `include: { ratings: true }` joins on jobId.
+  @@index([jobId])
+  // GET /api/reputation/:address aggregates `WHERE rateeId = ?` (via stellarAddress).
+  @@index([rateeId])
+  // Ratings submitted by a rater (issue #92; also the prefix of the unique below).
+  @@index([raterId])
 
   @@unique([raterId, jobId])
 }
