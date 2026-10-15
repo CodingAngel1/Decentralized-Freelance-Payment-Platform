@@ -311,6 +311,10 @@ function asNumber(value: unknown): number | null {
   return big === null ? null : Number(big);
 }
 
+function asAddress(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 async function handleCreated(data: Record<string, unknown>): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
@@ -392,9 +396,127 @@ async function handleRaised(data: Record<string, unknown>): Promise<void> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Rated events
+// ---------------------------------------------------------------------------
+
+/**
+ * The slice of `prisma` `applyRatedEvent` touches, kept structural so the
+ * handler is unit-testable with an in-memory store instead of a database
+ * (the same approach as `AuthNonceStore` in lib/authNonce.ts).
+ */
+export interface RatedStores {
+  job: {
+    findUnique(args: { where: { escrowId: bigint } }): Promise<{ id: string } | null>;
+  };
+  user: {
+    upsert(args: {
+      where: { stellarAddress: string };
+      create: { stellarAddress: string };
+      update: Record<string, never>;
+    }): Promise<{ id: string }>;
+  };
+  rating: {
+    upsert(args: {
+      where: { raterId_jobId: { raterId: string; jobId: string } };
+      create: { jobId: string; raterId: string; rateeId: string; score: number };
+      update: { rateeId: string; score: number };
+    }): Promise<unknown>;
+  };
+}
+
+/** A decoded `rated` event, or `null` when a field is missing/malformed. */
+interface RatedEvent {
+  escrowId: bigint;
+  rater: string;
+  ratee: string;
+  score: number;
+}
+
+function parseRatedEvent(data: Record<string, unknown>): RatedEvent | null {
+  const escrowId = asBigInt(data.escrow_id);
+  const rater = asAddress(data.rater);
+  const ratee = asAddress(data.ratee);
+  const score = asNumber(data.score);
+  if (escrowId === null || rater === null || ratee === null || score === null) return null;
+  return { escrowId, rater, ratee, score };
+}
+
+/** What `applyRatedEvent` did, so callers (and tests) can tell them apart. */
+export type RatedOutcome =
+  | { status: "applied"; jobId: string; score: number }
+  | { status: "skipped"; reason: "malformed" | "unknown-job" };
+
+/**
+ * Persist a `rated` event as a single Rating row.
+ *
+ * `reputation.submit` is the only way a rating is created, and a client can
+ * bypass this API entirely (`stellar contract invoke`, `scripts/demo_testnet.sh`),
+ * so for those ratings the event is the only record we get. The row is keyed by
+ * `(rater, job)` — the same key `POST /api/reputation` uses — so a row that the
+ * API wrote before the transaction landed is updated in place rather than
+ * duplicated, and the on-chain score (authoritative) overwrites the placeholder
+ * while the off-chain `comment` is preserved.
+ *
+ * A rating event whose escrow has no off-chain Job row is skipped: `Rating.jobId`
+ * is required, and inventing a job from a rating would put fabricated data in
+ * the listing. The event is logged so it can be reconciled by hand.
+ */
+export async function applyRatedEvent(
+  db: RatedStores,
+  data: Record<string, unknown>,
+): Promise<RatedOutcome> {
+  const event = parseRatedEvent(data);
+  if (!event) return { status: "skipped", reason: "malformed" };
+
+  const job = await db.job.findUnique({ where: { escrowId: event.escrowId } });
+  if (!job) return { status: "skipped", reason: "unknown-job" };
+
+  // An on-chain rater/ratee may never have authenticated against this API, so
+  // materialise the user rows rather than dropping the rating on the floor.
+  const [rater, ratee] = await Promise.all([
+    db.user.upsert({
+      where: { stellarAddress: event.rater },
+      create: { stellarAddress: event.rater },
+      update: {},
+    }),
+    db.user.upsert({
+      where: { stellarAddress: event.ratee },
+      create: { stellarAddress: event.ratee },
+      update: {},
+    }),
+  ]);
+
+  await db.rating.upsert({
+    where: { raterId_jobId: { raterId: rater.id, jobId: job.id } },
+    create: {
+      jobId: job.id,
+      raterId: rater.id,
+      rateeId: ratee.id,
+      score: event.score,
+    },
+    // On-chain score wins; keep any comment the API stored.
+    update: { rateeId: ratee.id, score: event.score },
+  });
+
+  return { status: "applied", jobId: job.id, score: event.score };
+}
+
 async function handleRated(data: Record<string, unknown>): Promise<void> {
-  // On-chain aggregates are authoritative and surfaced via the reputation
-  // contract; the off-chain Rating rows are written by the API. Nothing to
-  // persist from the event itself yet.
-  console.log("[indexer] rated", data.escrow_id, data.ratee);
+  const outcome = await applyRatedEvent(prisma as unknown as RatedStores, data);
+
+  if (outcome.status === "applied") {
+    console.log("[indexer] rated job", outcome.jobId, "score", outcome.score);
+    return;
+  }
+
+  if (outcome.reason === "unknown-job") {
+    console.warn(
+      `[indexer] rated event for escrow ${String(data.escrow_id)} has no job record; ` +
+        "the rating cannot be stored until the job exists (see POST /api/escrow/sync/:jobId).",
+    );
+    return;
+  }
+
+  console.warn("[indexer] ignored a malformed rated event", data);
 }
