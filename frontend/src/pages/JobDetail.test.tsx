@@ -111,6 +111,116 @@ function submitRatingForm(): void {
   fireEvent.submit(form);
 }
 
+/**
+ * A live escrow with one milestone still to release. `BigInt(id)` on a
+ * non-numeric `:id` is #106 (tracked separately): the guard that should catch it
+ * is unreachable while the conversion throws, so nothing here asserts the crash.
+ */
+const ACTIVE = {
+  ...COMPLETED,
+  status: "Active",
+  milestones: [{ amount: 20_000_000n, released: false, released_amount: 0n, deadline: 0n }],
+};
+
+/** The same escrow once its only milestone has been paid out. */
+const ACTIVE_RELEASED = {
+  ...ACTIVE,
+  milestones: [
+    { amount: 20_000_000n, released: true, released_amount: 20_000_000n, deadline: 0n },
+  ],
+};
+
+describe("JobDetail actions", () => {
+  beforeEach(() => {
+    h.escrow.releaseMilestone.mockReset();
+    h.escrow.releaseMilestone.mockResolvedValue({ hash: "RELEASEHASH", result: undefined });
+    h.escrow.openDispute.mockReset();
+    h.escrow.openDispute.mockResolvedValue({ hash: "DISPUTEHASH", result: undefined });
+  });
+
+  it("releases a milestone for the client and links the transaction", async () => {
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    render(<JobDetail />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Release" }));
+
+    await waitFor(() => expect(h.escrow.releaseMilestone).toHaveBeenCalledWith(7n, 0));
+    const tx = await screen.findByRole("link", { name: /RELEASE/ });
+    expect(tx.getAttribute("href")).toBe("https://stellar.expert/tx/RELEASEHASH");
+  });
+
+  it("does not offer a release to the freelancer", async () => {
+    // Only the client can move funds out of escrow; the contract enforces it, but
+    // the button should never be shown either.
+    h.wallet.publicKey = FREELANCER;
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Release" })).toBeNull();
+  });
+
+  it("does not offer a release once the job is no longer active", async () => {
+    h.escrow.getEscrow.mockResolvedValue(COMPLETED);
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Release" })).toBeNull();
+  });
+
+  it("does not offer a release for an already released milestone", async () => {
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE_RELEASED);
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Release" })).toBeNull();
+  });
+
+  it("freezes every action while a dispute is open", async () => {
+    h.escrow.getEscrow.mockResolvedValue(DISPUTED);
+    h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() + 3 * 86_400));
+    render(<JobDetail />);
+
+    await screen.findByText(/frozen pending arbitration/i);
+    expect(screen.queryByRole("button", { name: "Release" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open dispute" })).toBeNull();
+  });
+
+  it("opens a dispute for a participant while the escrow is active", async () => {
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    render(<JobDetail />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open dispute" }));
+
+    await waitFor(() => expect(h.escrow.openDispute).toHaveBeenCalledWith(7n));
+  });
+
+  it("does not offer a dispute to a wallet with no stake in the job", async () => {
+    h.wallet.publicKey = "GSTRANGER";
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Open dispute" })).toBeNull();
+  });
+});
+
+describe("JobDetail load state", () => {
+  it("explains a failed read instead of rendering an empty page", async () => {
+    h.escrow.getEscrow.mockResolvedValue(undefined);
+    render(<JobDetail />);
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/could not load escrow/i);
+  });
+
+  it("shows the error the hook surfaced", async () => {
+    h.escrow.error = "Could not reach the network.";
+    render(<JobDetail />);
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not reach the network.");
+  });
+});
+
 describe("JobDetail rating", () => {
   it("offers the participant a rating form on a completed job", async () => {
     await renderCompleted();

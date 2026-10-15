@@ -206,10 +206,13 @@ contract function must ship with tests for both its success and failure paths.
 
 ```bash
 cd contracts && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test
-cd ../frontend && npm run lint && npx tsc --noEmit && npm run build
+cd ../frontend && npm run lint && npx tsc --noEmit && npm test && npm run build
+cd ../backend && npx prisma generate && npx tsc --noEmit && npm test
 ```
 
-That is exactly what CI runs.
+That is exactly what CI runs. The test steps are not optional: the frontend
+suite no longer passes `--passWithNoTests`, so a broken or emptied suite fails
+the build instead of reporting success on nothing.
 
 ---
 

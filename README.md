@@ -67,8 +67,8 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | `dispute` contract | ✅ Complete — verified raise, M-of-N arbitrator panel, resolution that calls back into escrow, dispute timelock |
 | `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings, amount-weighted aggregates, per-pair anti-spam (`docs/REPUTATION.md`) |
 | Contract tests | ✅ 86 tests: 83 unit tests (escrow 49, dispute 17, reputation 17) covering every state transition and failure path, plus 3 end-to-end tests in `contracts/dispute/tests/full_flow.rs` that drive escrow + dispute + reputation together |
-| Backend tests | ✅ 60 tests |
-| Frontend tests | ✅ 33 tests (Vitest + Testing Library) |
+| Backend tests | ✅ 74 tests |
+| Frontend tests | ✅ 86 tests (Vitest + Testing Library) — pages, components and lib helpers |
 | Testnet deployment | ✅ Deployed and initialized (ids in [`deployments/testnet.json`](./deployments/testnet.json)) |
 | Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation |
 | Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC, with a dead-letter table for events it cannot apply |
@@ -327,13 +327,13 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 stellar contract build          # requires stellar-cli v25.2.0+
 
-# Backend — 60 tests
+# Backend — 74 tests
 cd backend
 npx prisma generate
 npx tsc --noEmit
 npm test
 
-# Frontend — 35 tests
+# Frontend — 86 tests
 cd frontend
 npm run lint
 npx tsc --noEmit
