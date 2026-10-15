@@ -278,12 +278,11 @@ the design notes behind issues #2-#18 live in
 
 Three lockfiles are committed (`backend/package-lock.json`,
 `frontend/package-lock.json`, `contracts/Cargo.lock`), so a version only moves
-when something bumps it. Two mechanisms cover that:
+when something bumps it. Version updates are **manual** — Dependabot is
+intentionally not configured (`.github/dependabot.yml` was removed) — so a bump
+happens when someone runs `npm audit fix` / `cargo update` or lands a PR that
+changes a manifest. One mechanism guards that:
 
-- **`.github/dependabot.yml`** opens weekly update PRs for npm (`/backend`,
-  `/frontend`), cargo (`/contracts`) and the GitHub Actions used by
-  `.github/workflows/ci.yml`. Minor and patch updates are grouped per ecosystem;
-  majors arrive on their own so a breaking bump is reviewed deliberately.
 - **The `Dependencies – vulnerability scan` job** runs
   `npm audit --audit-level=high --omit=dev` for both packages and
   `cargo audit` for the contracts on every push and PR.
@@ -302,7 +301,8 @@ tests compile the same crates the wasm build does.
 
 Handling a new advisory:
 
-1. Prefer a bump: `npm audit fix` for a non-breaking fix, or the Dependabot PR.
+1. Prefer a bump: `npm audit fix` for a non-breaking fix, or a small PR that
+   changes the manifest and the lockfile together.
 2. If the finding is in a production dependency, treat it as a bug rather than
    noise — the backend verifies wallet signatures and holds JWTs, so a parsing or
    network flaw in one of its dependencies is reachable from the internet.
