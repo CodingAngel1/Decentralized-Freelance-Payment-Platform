@@ -66,8 +66,8 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | `escrow` contract | ✅ Complete — milestones (editable before funding, partial releases), expiry refunds, validated inputs, TTL, events |
 | `dispute` contract | ✅ Complete — verified raise, M-of-N arbitrator panel, resolution that calls back into escrow, dispute timelock |
 | `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings, amount-weighted aggregates, per-pair anti-spam (`docs/REPUTATION.md`) |
-| Contract tests | ✅ 84 tests: 81 unit tests (escrow 49, dispute 17, reputation 15) covering every state transition and failure path, plus 3 end-to-end tests in `contracts/dispute/tests/full_flow.rs` that drive escrow + dispute + reputation together |
-| Backend tests | ✅ 47 tests |
+| Contract tests | ✅ 86 tests: 83 unit tests (escrow 49, dispute 17, reputation 17) covering every state transition and failure path, plus 3 end-to-end tests in `contracts/dispute/tests/full_flow.rs` that drive escrow + dispute + reputation together |
+| Backend tests | ✅ 55 tests |
 | Frontend tests | ✅ 33 tests (Vitest + Testing Library) |
 | Testnet deployment | ✅ Deployed and initialized (ids in [`deployments/testnet.json`](./deployments/testnet.json)) |
 | Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation |
@@ -317,14 +317,14 @@ not just a restart.
 ## Testing
 
 ```bash
-# Contracts — 84 tests (81 unit + 3 integration)
+# Contracts — 86 tests (83 unit + 3 integration)
 cd contracts
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 stellar contract build          # requires stellar-cli v25.2.0+
 
-# Backend — 47 tests
+# Backend — 55 tests
 cd backend
 npx prisma generate
 npx tsc --noEmit

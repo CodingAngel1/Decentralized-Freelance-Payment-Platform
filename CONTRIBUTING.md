@@ -186,7 +186,7 @@ without exporting one another's symbols. Contract crates are pulled in only as
 ## Testing
 
 ```bash
-# Contracts: 84 tests — every state transition and failure path + 3 integration
+# Contracts: 86 tests — every state transition and failure path + 3 integration
 cd contracts
 cargo test
 cargo test -p escrow                    # one contract
@@ -222,6 +222,11 @@ That is exactly what CI runs.
 - **TTL:** extend storage TTL whenever you read or write a persistent entry.
 - **Events:** emit a `#[contractevent]` for every state change so the indexer
   can follow the chain.
+- **Typed ScVal arguments:** build contract-call arguments with the helpers in
+  `backend/src/lib/scval.ts` (`scAddress`/`scU32`/`scU64`/`scI128`), never a bare
+  `nativeToScVal(value)` — the SDK infers `u64`/`i64` for a plain number or
+  bigint, and Soroban rejects a mismatched argument type before the function
+  body runs. Mirrors `frontend/src/lib/stellar.ts`.
 - **One PR per concern:** keep contract changes and frontend changes separate
   where practical.
 - Keep contract interfaces small and explicit — add a new function rather than
