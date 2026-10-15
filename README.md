@@ -210,7 +210,7 @@ pending state stops double submits.
 | Wallet | Freighter browser extension (SEP-53 message signing) |
 | Backend | Express 4 + Prisma 5 + PostgreSQL, Zod validation, JWT (`jose`), Helmet, rate limiting |
 | Chain access | `@stellar/stellar-sdk` 12 (Soroban RPC + Horizon) |
-| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend |
+| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend, dependency vulnerability scan (advisory; `npm audit` + `cargo audit`) |
 
 ## Repository layout
 
