@@ -14,6 +14,11 @@ const h = vi.hoisted(() => ({
     connecting: false,
     signMessage: vi.fn(async () => "sig"),
   },
+  api: {
+    authenticate: vi.fn(),
+    createJob: vi.fn(),
+    linkEscrowId: vi.fn(),
+  },
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -30,9 +35,9 @@ vi.mock("../lib/stellar", () => ({
   explorerTxUrl: (hash: string) => `https://stellar.expert/tx/${hash}`,
 }));
 vi.mock("../lib/api", () => ({
-  authenticate: vi.fn(),
-  createJob: vi.fn(),
-  linkEscrowId: vi.fn(),
+  authenticate: h.api.authenticate,
+  createJob: h.api.createJob,
+  linkEscrowId: h.api.linkEscrowId,
 }));
 
 type Page = React.ComponentType;
