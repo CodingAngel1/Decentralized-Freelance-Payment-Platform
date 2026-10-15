@@ -29,6 +29,7 @@ import {
   buildReleaseMilestoneArgs,
 } from "../lib/scval";
 import { getAsset, toBaseUnits, UnknownAssetError } from "../lib/assets";
+import { isValidStellarAddress } from "../lib/stellarAddress";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -54,7 +55,7 @@ async function buildTx(sourceAddress: string, operation: any): Promise<string> {
 // POST /api/escrow/build/create
 const buildCreateSchema = z.object({
   jobId: z.string(),
-  freelancerAddress: z.string().startsWith("G"),
+  freelancerAddress: z.string().refine(isValidStellarAddress, "Invalid Stellar address"),
   expiryTimestamp: z.number().int().positive(),
 });
 

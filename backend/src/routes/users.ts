@@ -26,6 +26,7 @@ import { validate } from "../middleware/validate";
 import { AppError } from "../middleware/errorHandler";
 import { consumeNonce, issueNonce, type AuthNonceStore } from "../lib/authNonce";
 import { verifySignedMessage } from "../lib/signature";
+import { isValidStellarAddress } from "../lib/stellarAddress";
 
 export const usersRouter = Router();
 
@@ -38,7 +39,7 @@ const nonceStore = prisma.authNonce as unknown as AuthNonceStore;
 usersRouter.get("/challenge", async (req, res, next) => {
   try {
     const address = String(req.query.address ?? "");
-    if (!address.startsWith("G")) throw new AppError(400, "Invalid Stellar address");
+    if (!isValidStellarAddress(address)) throw new AppError(400, "Invalid Stellar address");
 
     const nonce = await issueNonce(nonceStore, address);
     res.json({ nonce });
@@ -49,7 +50,7 @@ usersRouter.get("/challenge", async (req, res, next) => {
 
 // POST /api/users/auth
 const authSchema = z.object({
-  address: z.string().startsWith("G"),
+  address: z.string().refine(isValidStellarAddress, "Invalid Stellar address"),
   /** Base64-encoded signature of the nonce */
   signature: z.string(),
   nonce: z.string(),
