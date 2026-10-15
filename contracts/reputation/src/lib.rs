@@ -8,19 +8,24 @@
 //! - A rating is only accepted if the escrow contract reports the job as
 //!   `Completed` and the rater/ratee are the two participants. This contract
 //!   therefore depends on the `escrow` crate for its generated client.
-//! - Raw ratings are stored unchanged; `get_aggregate` derives a **weighted**
-//!   view from them (see `docs/REPUTATION.md`):
-//!     * each rating is weighted by the escrow's `total_amount`,
+//! - Raw ratings are stored unchanged and remain the source of truth. The
+//!   **weighted** aggregate (see `docs/REPUTATION.md`) is *maintained* by
+//!   `submit` rather than derived on read:
+//!     * each counted rating is weighted by its escrow's `total_amount`,
 //!     * only the first rating from a given rater counts (anti-spam),
 //!     * `weight` is the sum of weights and `total_score` the weight-summed
 //!       score, so `average = total_score / weight`.
+//!
+//! `submit` already reads the escrow to verify completion, so weighting costs no
+//! extra cross-contract call, and `get_aggregate` is a single storage read with
+//! none at all (see the cost model in `docs/REPUTATION.md`).
 //! - Phase 3 (see `docs/wave-issues`): skill-tag endorsements.
 
 #![no_std]
 
 use interface::{EscrowClient, EscrowData, EscrowStatus};
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env,
 };
 
 // ---------------------------------------------------------------------------
@@ -48,7 +53,8 @@ pub struct Rating {
 /// Weighted reputation for an address.
 ///
 /// `average = total_score / weight` (0 when `weight` is 0). `count` is the
-/// number of ratings that counted toward the aggregate.
+/// number of ratings that counted toward the aggregate. Maintained by `submit`,
+/// so reading it is a single storage read.
 #[contracttype]
 #[derive(Clone, PartialEq, Debug)]
 pub struct Aggregate {
@@ -61,8 +67,13 @@ pub struct Aggregate {
 pub enum DataKey {
     /// Keyed by (rater, escrow_id) to prevent duplicate ratings.
     Rating(Address, u64),
-    /// Ratee → the (rater, escrow_id) pairs that have rated them.
-    RateeRaters(Address),
+    /// Keyed by (ratee, rater). Presence means that rater has already counted
+    /// toward the ratee's aggregate, so a later rating from them does not.
+    /// This replaces the old per-ratee list of every rating, which grew with
+    /// each rating and was deserialized and rewritten in full on every submit.
+    RatingCounted(Address, Address),
+    /// ratee → the maintained weighted aggregate.
+    Aggregate(Address),
     Admin,
     EscrowContract,
 }
@@ -131,8 +142,9 @@ impl ReputationContract {
     /// Submit a rating after a job completes.
     ///
     /// Verifies with the escrow contract that the job is completed and that the
-    /// rater and ratee are its two participants. The raw rating is stored as-is;
-    /// weighting happens in [`get_aggregate`].
+    /// rater and ratee are its two participants, stores the raw rating as-is,
+    /// and folds it into the ratee's aggregate (see [`get_aggregate`]) when it is
+    /// the first rating from that rater.
     ///
     /// # Arguments
     /// - `rater`     – address submitting the rating (must be a participant)
@@ -197,24 +209,34 @@ impl ReputationContract {
             .persistent()
             .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
 
-        // Index the (rater, escrow) pair under the ratee so the aggregate can be
-        // derived without scanning all ratings.
-        let index_key = DataKey::RateeRaters(ratee.clone());
-        let mut raters: Vec<(Address, u64)> = env
-            .storage()
-            .persistent()
-            .get(&index_key)
-            .unwrap_or(Vec::new(&env));
-        let already_indexed = raters
-            .iter()
-            .any(|entry| entry.0 == rater && entry.1 == escrow_id);
-        if !already_indexed {
-            raters.push_back((rater.clone(), escrow_id));
+        // Fold the rating into the ratee's aggregate, at most once per
+        // (ratee, rater): only the first rating from a given rater counts
+        // (anti-spam), weighted by the job's `total_amount`. The escrow was
+        // already read above to verify completion, so this costs no extra
+        // cross-contract call and keeps `get_aggregate` a single storage read.
+        let counted_key = DataKey::RatingCounted(ratee.clone(), rater.clone());
+        if !env.storage().persistent().has(&counted_key) {
+            env.storage().persistent().set(&counted_key, &escrow_id);
+            env.storage()
+                .persistent()
+                .extend_ttl(&counted_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+
+            let weight: u64 = escrow.total_amount.try_into().unwrap_or(0);
+            if weight > 0 {
+                let mut aggregate = Self::get_aggregate(env.clone(), ratee.clone());
+                aggregate.total_score = aggregate
+                    .total_score
+                    .saturating_add((score as u64).saturating_mul(weight));
+                aggregate.weight = aggregate.weight.saturating_add(weight);
+                aggregate.count = aggregate.count.saturating_add(1);
+
+                let aggregate_key = DataKey::Aggregate(ratee.clone());
+                env.storage().persistent().set(&aggregate_key, &aggregate);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&aggregate_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+            }
         }
-        env.storage().persistent().set(&index_key, &raters);
-        env.storage()
-            .persistent()
-            .extend_ttl(&index_key, TTL_THRESHOLD, TTL_EXTEND_TO);
 
         Self::extend_instance(&env);
 
@@ -233,60 +255,27 @@ impl ReputationContract {
 
     /// Weighted reputation for `address`.
     ///
-    /// Each counted rating is weighted by its escrow's `total_amount`; only the
-    /// first rating from a given rater counts (anti-spam). Averaging is
-    /// `total_score / weight`. Raw ratings are never modified.
+    /// Each counted rating was weighted by its escrow's `total_amount` when it
+    /// was submitted; only the first rating from a given rater counts
+    /// (anti-spam). Averaging is `total_score / weight`. Raw ratings are never
+    /// modified.
+    ///
+    /// `submit` maintains the value, so this reads one storage entry and makes
+    /// **no** cross-contract call, regardless of how many ratings exist. An
+    /// address with no counted ratings returns the zero aggregate.
     pub fn get_aggregate(env: Env, address: Address) -> Aggregate {
-        let entries: Vec<(Address, u64)> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RateeRaters(address))
-            .unwrap_or(Vec::new(&env));
-        let escrow_contract: Option<Address> =
-            env.storage().instance().get(&DataKey::EscrowContract);
-
-        let mut total_score: u64 = 0;
-        let mut weight: u64 = 0;
-        let mut count: u64 = 0;
-        let mut seen: Vec<Address> = Vec::new(&env);
-
-        for entry in entries.iter() {
-            let (rater, escrow_id) = entry;
-
-            // Anti-spam: at most one rating per (rater, ratee) pair counts.
-            if seen.iter().any(|seen_rater| seen_rater == rater) {
-                continue;
-            }
-            seen.push_back(rater.clone());
-
-            let rating: Option<Rating> = env
-                .storage()
+        let key = DataKey::Aggregate(address);
+        let stored: Option<Aggregate> = env.storage().persistent().get(&key);
+        if stored.is_some() {
+            env.storage()
                 .persistent()
-                .get(&DataKey::Rating(rater.clone(), escrow_id));
-            let Some(rating) = rating else {
-                continue;
-            };
-
-            // Weight by the size of the job; unreadable escrows contribute 0.
-            let escrow_weight = match &escrow_contract {
-                Some(contract) => Self::escrow_total(&env, contract, escrow_id),
-                None => 0,
-            };
-            if escrow_weight == 0 {
-                continue;
-            }
-
-            total_score =
-                total_score.saturating_add((rating.score as u64).saturating_mul(escrow_weight));
-            weight = weight.saturating_add(escrow_weight);
-            count = count.saturating_add(1);
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
         }
-
-        Aggregate {
-            total_score,
-            weight,
-            count,
-        }
+        stored.unwrap_or(Aggregate {
+            total_score: 0,
+            weight: 0,
+            count: 0,
+        })
     }
 
     /// Read a single rating (view).
@@ -300,18 +289,6 @@ impl ReputationContract {
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
-
-    /// The escrow's total amount, or 0 if it cannot be read / is not positive.
-    fn escrow_total(env: &Env, escrow_contract: &Address, escrow_id: u64) -> u64 {
-        let escrow = EscrowClient::new(env, escrow_contract)
-            .try_get(&escrow_id)
-            .ok()
-            .and_then(|inner| inner.ok());
-        match escrow {
-            Some(data) => data.total_amount.try_into().unwrap_or(0),
-            None => 0,
-        }
-    }
 
     fn extend_instance(env: &Env) {
         env.storage()
