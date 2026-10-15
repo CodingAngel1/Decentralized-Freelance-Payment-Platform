@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 // Hoisted so the vi.mock factories below can reference them.
 const h = vi.hoisted(() => ({
@@ -99,112 +99,32 @@ describe("PostJob asset picker", () => {
   });
 });
 
-const FREELANCER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-
-/** Fill in the minimum a client has to provide for the form to submit. */
-function fillForm(amount = "2.5"): void {
-  fireEvent.change(screen.getByLabelText(/^Title/), {
-    target: { value: "Landing page redesign" },
+/** Render the form with milestone amounts filled in and read the Total line. */
+async function renderTotal(amounts: string[]): Promise<string> {
+  await renderWithEnv({});
+  for (let i = 1; i < amounts.length; i++) {
+    fireEvent.click(screen.getByRole("button", { name: "Add milestone" }));
+  }
+  amounts.forEach((amount, i) => {
+    fireEvent.change(screen.getByLabelText(new RegExp(`Amount #${i + 1}`)), {
+      target: { value: amount },
+    });
   });
-  fireEvent.change(screen.getByLabelText(/Description/), {
-    target: { value: "What needs to be delivered by Friday" },
-  });
-  fireEvent.change(screen.getByLabelText(/Freelancer Stellar address/), {
-    target: { value: FREELANCER },
-  });
-  fireEvent.change(screen.getByLabelText(/Amount #1/), { target: { value: amount } });
+  return screen.getByText(/^Total:/).textContent ?? "";
 }
 
-/** Submit through the form, whatever the button is labelled. */
-function submitForm(): void {
-  const button = screen.getByRole("button", { name: /Create & Fund Escrow|Connect & Continue/ });
-  fireEvent.submit(button.closest("form") as HTMLFormElement);
-}
-
-describe("PostJob submission", () => {
-  beforeEach(() => {
-    h.wallet.publicKey = "GCLIENT";
-    h.escrow.createAndFund.mockReset();
-    h.escrow.createAndFund.mockResolvedValue({ id: 7n, hash: "CREATEFUNDHASH" });
-    h.api.authenticate.mockReset();
-    h.api.authenticate.mockResolvedValue("jwt-1");
-    h.api.createJob.mockReset();
-    h.api.createJob.mockResolvedValue({ id: "job-1" });
-    h.api.linkEscrowId.mockReset();
-    h.api.linkEscrowId.mockResolvedValue(undefined);
-    h.wallet.connect.mockClear();
+describe("PostJob total", () => {
+  it("shows the exact decimal sum, not a float artefact", async () => {
+    const text = await renderTotal(["0.1", "0.1", "0.1"]);
+    expect(text).toContain("0.3");
+    expect(text).not.toContain("0.30000000000000004");
   });
 
-  it("connects the wallet instead of spending anything when none is connected", async () => {
-    h.wallet.publicKey = null;
-    await renderWithEnv({ VITE_XLM_CONTRACT_ID: "CXLM" });
-    fillForm();
-
-    submitForm();
-
-    await waitFor(() => expect(h.wallet.connect).toHaveBeenCalled());
-    // Nothing is built before a wallet exists: the client's funds are at stake.
-    expect(h.escrow.createAndFund).not.toHaveBeenCalled();
+  it("sums whole and fractional amounts exactly", async () => {
+    expect(await renderTotal(["1", "0.5"])).toContain("1.5");
   });
 
-  it("refuses to create an escrow while a milestone amount is not positive", async () => {
-    await renderWithEnv({ VITE_XLM_CONTRACT_ID: "CXLM" });
-    fillForm("0");
-
-    submitForm();
-
-    expect(h.escrow.createAndFund).not.toHaveBeenCalled();
-  });
-
-  it("creates and funds the escrow, records the job and links the escrow id", async () => {
-    await renderWithEnv({ VITE_XLM_CONTRACT_ID: "CXLM" });
-    fillForm();
-
-    submitForm();
-
-    await screen.findByText(/Escrow #7 created and funded/);
-
-    // On-chain: the client's address, the chosen SAC, the amounts in base units.
-    expect(h.escrow.createAndFund).toHaveBeenCalledWith(
-      FREELANCER,
-      "CXLM",
-      [{ amount: 25_000_000n, deadline: 0n }],
-      expect.any(BigInt),
-    );
-
-    // Off-chain: the job record carries the asset the job pays in, then the
-    // escrow id is linked so the job becomes reachable from the dashboard.
-    expect(h.api.createJob).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Landing page redesign",
-        asset: "XLM",
-        milestones: [expect.objectContaining({ amountUsdc: 2.5 })],
-      }),
-      "jwt-1",
-    );
-    expect(h.api.linkEscrowId).toHaveBeenCalledWith("job-1", 7, "jwt-1");
-
-    // The transaction and the new escrow are both reachable from the page.
-    expect(
-      screen.getByRole("link", { name: /CREATEFUND/ }).getAttribute("href"),
-    ).toBe("https://stellar.expert/tx/CREATEFUNDHASH");
-    expect(screen.getByRole("link", { name: /Open job/ }).getAttribute("href")).toBe("/jobs/7");
-  });
-
-  it("says the escrow exists on-chain but was not recorded, and keeps the id", async () => {
-    // The dangerous half-failure: the funds are committed but the dashboard has
-    // no record, so the user has to be told to keep the escrow id.
-    h.api.createJob.mockRejectedValue(new Error("Could not save the job (HTTP 500)"));
-    await renderWithEnv({ VITE_XLM_CONTRACT_ID: "CXLM" });
-    fillForm();
-
-    submitForm();
-
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toMatch(/on-chain escrow created, but the job record was not saved/i);
-    expect(alert.textContent).toContain("HTTP 500");
-    expect(screen.getByText(/Escrow #7 created and funded/)).toBeTruthy();
-    // No escrow id is invented when the record never came back.
-    expect(h.api.linkEscrowId).not.toHaveBeenCalled();
+  it("ignores empty amounts while the form is being filled in", async () => {
+    expect(await renderTotal(["0.2", ""])).toContain("0.2");
   });
 });

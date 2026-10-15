@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  DISPUTE_ERROR_MESSAGES,
   ESCROW_ERROR_MESSAGES,
   friendlyContractError,
   parseContractErrorCode,
@@ -44,5 +45,22 @@ describe("friendlyContractError", () => {
       expect(ESCROW_ERROR_MESSAGES[code]).toBeTruthy();
       expect(parseContractErrorCode(`Error(Contract, #${code})`)).toBe(code);
     }
+  });
+
+  it("covers every DisputeError discriminant", () => {
+    // contracts/dispute/src/lib.rs declares 1..=13.
+    for (let code = 1; code <= 13; code++) {
+      expect(DISPUTE_ERROR_MESSAGES[code]).toBeTruthy();
+    }
+  });
+
+  it("uses the dispute map for a dispute call, since the codes collide", () => {
+    // #7 is ZeroAmount in EscrowError and EscrowNotDisputed in DisputeError: the
+    // same number, two different explanations. A route must pass its own map or
+    // it reports "amounts must be greater than zero" for a non-disputed escrow.
+    const host = "HostError: Error(Contract, #7)";
+
+    expect(friendlyContractError(host)).toBe(ESCROW_ERROR_MESSAGES[7]);
+    expect(friendlyContractError(host, DISPUTE_ERROR_MESSAGES)).toMatch(/isn't disputed/i);
   });
 });

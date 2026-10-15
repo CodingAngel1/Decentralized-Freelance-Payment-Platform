@@ -55,32 +55,88 @@ a timelock escape hatch if they never do.
   `Refunded`. A late ruling then fails `escrow.resolve`'s status check, so funds
   cannot be paid out twice.
 
-## Off-chain record
-
-The backend indexer mirrors these events into `Job` and `Dispute` rows, and two
+## Off-chain recordThe backend indexer mirrors these events into `Job` and `Dispute` rows, and three
 properties of that mirror are deliberate:
 
-- **A `Dispute` row exists once the dispute is *raised*, not when it is opened.**
-  `escrow.open_dispute` emits `dispute_opened`, which only marks the job
-  `DISPUTED`: the on-chain dispute has no id or reason until `dispute.raise`, so
-  there is nothing to record. `dispute.raise` emits `raised`, and the indexer
-  creates the row then. A job can therefore be `DISPUTED` with an empty
-  `disputes[]` between the two transactions — that is the intended state, not a
-  dropped event.
+- **Who runs the two transactions.** Steps 1 and 2 above are one user action:
+  `useEscrow.openDispute` submits `escrow.open_dispute` and then
+  `dispute.raise`. The backend builds both as well — `POST /api/disputes`
+  returns the `open_dispute` XDR and `POST /api/disputes/:id/raise` the `raise`
+  XDR — for API-first clients, and the frontend ignores both and encodes the
+  calls itself. They cannot be reordered: `escrow.open_dispute` moves the escrow
+  to `Disputed`, and `dispute.raise` cross-calls the escrow and rejects the call
+  while it is not (`EscrowNotDisputed`).
+- **Carrying the reason and the id.** The `Raised` event has no reason field —
+  `dispute.raise` takes the reason as an argument and only the off-chain row can
+  keep it — while the on-chain dispute id does not exist until `raise`
+  confirms. So the row is written by `POST /api/disputes` *before* either
+  transaction, and the id is attached afterwards by whichever writes first:
+  `POST /api/disputes/:id/sync` (called by the frontend with the id the contract
+  returned, so arbitrators can rule without waiting for a poll) or the indexer's
+  `raised` handler. Both write the same row: `Dispute.jobId` is unique and both
+  upsert on it. A job can therefore be `DISPUTED` with a `Dispute` row whose
+  `onChainId` is still `null`, and that is the intended state between the two
+  transactions: the reason is recorded, the id is not yet known.
 - **A refund is terminal and closes the dispute.** `refunded` is emitted by both
   `reclaim_expired` and `reclaim_after_dispute_timeout`. The indexer sets the job
   to `REFUNDED` and moves every still-open dispute for that escrow (`RAISED` or
   `UNDER_REVIEW`) to the terminal `REFUNDED` status, stamping `resolvedAt`. A
   `RESOLVED` dispute means a panel ruled; a `REFUNDED` dispute means the funds
   went back to the client without a ruling. `refunded` cannot arrive twice for
-  the same escrow (both refund paths are terminal), and no later event touches a
+the same escrow (both refund paths are terminal), and no later event touches a
   refunded dispute.
+
+The indexer reads an event's fields from its value map **and** its `#[topic]`
+fields (`topic[1..]`), because every event except escrow's `created`/`funded`
+carries `escrow_id` in `topic[1]` (see [`EVENTS.md`](./EVENTS.md)). Reading only
+the value map is what left `handleRaised` — and every other post-funding
+handler — with no id to look the row up by.
+
+### The `raise` sequence, end to end
+
+```
+client                                backend                    chain
+------                                -------                    -----
+POST /api/disputes {jobId, reason} →  upsert Dispute(jobId)      —
+                                      (no onChainId)  →
+                                      ← {dispute, xdr}
+escrow.open_dispute ─────────────────────────────────────────→  Active → Disputed
+                                                                    emits dispute_opened
+                                                                      → job: DISPUTED
+POST /api/disputes/:id/raise ──────→  build dispute.raise (reason
+                                      read from the row) →
+                                      ← {xdr}
+dispute.raise(escrow_id, escrow,                                     creates dispute #N
+  raised_by, reason) ────────────────────────────────────────→      emits raised
+  ← dispute id from simulation
+POST /api/disputes/:id/sync {onChainId} → set Dispute.onChainId  —
+
+                    …the panel then calls dispute.approve ×M, then arbitrate
+```
+
+`POST /api/disputes/:id/resolve` refuses with `409` while `onChainId` is null,
+because `dispute.arbitrate` keys on the on-chain dispute id. That guard is the
+only reason `sync` exists.
 
 So `Dispute.status` has exactly two terminal values — `RESOLVED` and `REFUNDED`
 — and any query for "open disputes" should filter on `RAISED`/`UNDER_REVIEW`.
 The `clientShare`/`freelancerShare` of a `REFUNDED` dispute are **not** a
 settlement split: a refund sends the entire remaining balance to the client, and
 the indexer does not invent a share split it was never told.
+
+## API summary
+
+| Route | Who | What it does |
+|-------|-----|--------------|
+| `POST /api/disputes` | a party | Upserts the job's dispute row (the reason lives here) and returns the `escrow.open_dispute` XDR. Idempotent per job. |
+| `GET /api/disputes/:id` | anyone | The row, with its party addresses. |
+| `POST /api/disputes/:id/raise` | a party | Returns the `dispute.raise` XDR, using the stored reason. `409` if the dispute is already on-chain. |
+| `POST /api/disputes/:id/sync` | a party | Records the on-chain dispute id returned by `raise`. |
+| `POST /api/disputes/:id/resolve` | an `ARBITRATOR_ADDRESSES` member | Returns the `dispute.arbitrate` XDR for a split. `409` until the dispute is on-chain. |
+
+Off-chain checks here are early rejections, not the security boundary: the
+escrow and dispute contracts re-check every precondition on-chain (the escrow is
+`Disputed`, the raiser is a party, the panel approved that exact split).
 
 ## Residual risks
 

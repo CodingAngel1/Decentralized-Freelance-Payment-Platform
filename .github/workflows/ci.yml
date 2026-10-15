@@ -81,3 +81,51 @@ jobs:
       - run: npx prisma generate
       - run: npx tsc --noEmit
       - run: npm test
+
+  # Dependency vulnerability scan (issue #110).
+  #
+  # Advisory for now, not blocking: both lockfiles currently carry known
+  # high/critical advisories that need a dependency bump rather than a CI change,
+  # and a red gate nobody can pass would block unrelated PRs instead of fixing
+  # them. `continue-on-error` keeps the finding visible in the run (the step is
+  # still reported as failed, with the advisory list in its log) without failing
+  # the workflow. CONTRIBUTING.md → Dependency security records the policy and
+  # the condition for making this blocking.
+  audit:
+    name: Dependencies – vulnerability scan (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # `npm audit` reads the committed lockfile, so no install is needed.
+      # `--omit=dev` keeps the report to what actually ships: build/test tooling
+      # (vite, vitest, eslint) is not audited here.
+      - name: npm audit (backend)
+        working-directory: backend
+        continue-on-error: true
+        run: npm audit --audit-level=high --omit=dev
+
+      - name: npm audit (frontend)
+        working-directory: frontend
+        continue-on-error: true
+        run: npm audit --audit-level=high --omit=dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+
+      # Covers the whole workspace, including the dev-dependencies the contract
+      # tests pull in. `--locked` builds cargo-audit against its own pinned
+      # dependency set.
+      - name: cargo audit (contracts)
+        working-directory: contracts
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit

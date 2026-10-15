@@ -199,7 +199,10 @@ React + TypeScript + Vite, with Freighter for signing.
 
 Every write shows the transaction hash and a stellar.expert link, contract errors
 are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target
-pending state stops double submits.
+pending state stops double submits. Every address on screen is copyable in one
+click and can be expanded into a QR code to scan into a wallet
+(`frontend/src/components/AddressField.tsx`) — a `G…` address is 56 characters,
+and selecting one by hand is how funds reach the wrong account.
 
 ## Stack
 
@@ -210,7 +213,7 @@ pending state stops double submits.
 | Wallet | Freighter browser extension (SEP-53 message signing) |
 | Backend | Express 4 + Prisma 5 + PostgreSQL, Zod validation, JWT (`jose`), Helmet, rate limiting |
 | Chain access | `@stellar/stellar-sdk` 12 (Soroban RPC + Horizon) |
-| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend |
+| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend, dependency vulnerability scan (advisory; `npm audit` + `cargo audit`) |
 
 ## Repository layout
 

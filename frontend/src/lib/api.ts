@@ -63,7 +63,11 @@ export async function fetchJobs(
 
 export interface CreateJobMilestoneInput {
   description?: string;
-  amountUsdc: number;
+  /**
+   * Whole units of the job asset. A decimal string is exact and preferred; a
+   * number is accepted but is already a binary float by the time it arrives.
+   */
+  amountUsdc: number | string;
   deadline?: string;
 }
 
@@ -176,4 +180,68 @@ export async function submitRating(
   });
   if (!res.ok) throw new Error(`Could not record the rating (HTTP ${res.status})`);
   return (await res.json()) as { rating: SubmittedRating; xdr: string };
+}
+
+export interface DisputeApi {
+  id: string;
+  jobId: string;
+  /** Set once `dispute.raise` has confirmed (see `linkDisputeId`). */
+  onChainId: string | number | null;
+  status: string;
+  reason: string;
+}
+
+/**
+ * Record a dispute off-chain and receive the server-built `escrow.open_dispute`
+ * transaction.
+ *
+ * The row is written before either transaction runs because the `raised` event
+ * carries no reason: this row is the only place the reason the panel reads is
+ * kept. Keyed on the job, so calling it twice (both parties may) returns the
+ * same dispute instead of a second one.
+ *
+ * As with `submitRating`, the returned `xdr` is not what the app submits —
+ * `useEscrow.openDispute` encodes `open_dispute` itself, so the on-chain call
+ * does not depend on the API's builder. This is the off-chain record, and what
+ * API-first integrators follow.
+ */
+export async function createDispute(
+  input: { jobId: string; reason: string },
+  token: string,
+): Promise<{ dispute: DisputeApi; xdr: string }> {
+  const res = await fetch(`${API_BASE_URL}/api/disputes`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`Could not record the dispute (HTTP ${res.status})`);
+  return (await res.json()) as { dispute: DisputeApi; xdr: string };
+}
+
+/**
+ * Attach the on-chain dispute id that `dispute.raise` returned to the row.
+ *
+ * Without this the id only arrives when the indexer next sees the `raised`
+ * event, and `POST /api/disputes/:id/resolve` refuses until then. The indexer
+ * writes the same field on the same row, so this is a head start, not a second
+ * source of truth.
+ */
+export async function linkDisputeId(
+  disputeId: string,
+  onChainId: number | bigint,
+  token: string,
+): Promise<DisputeApi> {
+  const res = await fetch(`${API_BASE_URL}/api/disputes/${disputeId}/sync`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ onChainId: Number(onChainId) }),
+  });
+  if (!res.ok) throw new Error(`Could not record the dispute id (HTTP ${res.status})`);
+  return (await res.json()) as DisputeApi;
 }

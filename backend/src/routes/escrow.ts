@@ -32,7 +32,7 @@ import {
   buildReclaimDisputeArgs,
   buildReleaseMilestoneArgs,
 } from "../lib/scval";
-import { getAsset, toBaseUnits, UnknownAssetError } from "../lib/assets";
+import { formatAmount, getAsset, sumAmounts, toBaseUnits, UnknownAssetError } from "../lib/assets";
 import { friendlyContractError } from "../lib/contractErrors";
 import { isValidStellarAddress } from "../lib/stellarAddress";
 import { prisma } from "../db";
@@ -210,9 +210,14 @@ escrowRouter.put(
       const escrowId = BigInt(escrowIdText);
       const { milestones } = req.body as z.infer<typeof recordMilestonesSchema>;
       const job = await loadEditableJob(escrowId, res.locals.stellarAddress);
-      assetForJob(job.asset); // reject an asset the registry does not know
+      const asset = assetForJob(job.asset); // reject an asset the registry does not know
 
-      const totalAmountUsdc = milestones.reduce((sum, m) => sum + m.amountUsdc, 0);
+      // Sum in base units (see POST /api/jobs): a float total would store
+      // 0.1 + 0.2 = 0.30000000000000004 in the DECIMAL(65,30) column.
+      const totalAmountUsdc = formatAmount(
+        sumAmounts(milestones.map((m) => m.amountUsdc), asset.decimals),
+        asset.decimals,
+      );
 
       // The edit replaces the breakdown, so the mirror has to replace its rows
       // too — otherwise a shorter list leaves orphaned milestones behind.
@@ -222,7 +227,10 @@ escrowRouter.put(
           data: milestones.map((m, i) => ({
             jobId: job.id,
             index: i,
-            amountUsdc: m.amountUsdc,
+            amountUsdc: formatAmount(
+              toBaseUnits(m.amountUsdc, asset.decimals),
+              asset.decimals,
+            ),
             description: m.description ?? `Milestone ${i + 1}`,
             deadline: m.deadline ? new Date(m.deadline) : null,
           })),

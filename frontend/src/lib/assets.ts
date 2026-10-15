@@ -64,3 +64,20 @@ export function toBaseUnits(amount: number | string, decimals: number): bigint {
 export function fromBaseUnits(base: bigint, decimals: number): number {
   return Number(base) / 10 ** decimals;
 }
+
+/**
+ * Render integer base units as a plain decimal string, exactly.
+ *
+ * Preferred over `fromBaseUnits` wherever a total is displayed: summing money
+ * as JavaScript numbers yields `0.1 + 0.2 = 0.30000000000000004`, and dividing a
+ * large `bigint` through `Number` can lose digits. `3000000n` at 7 decimals
+ * becomes `"0.3"`, matching the decimal string the API stores and returns.
+ */
+export function formatAmount(base: bigint, decimals: number): string {
+  const negative = base < 0n;
+  const digits = (negative ? -base : base).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals);
+  const fraction =
+    decimals > 0 ? digits.slice(digits.length - decimals).replace(/0+$/, "") : "";
+  return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
+}

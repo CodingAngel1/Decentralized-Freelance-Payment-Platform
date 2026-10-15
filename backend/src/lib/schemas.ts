@@ -8,9 +8,24 @@
 
 import { z } from "zod";
 
+/**
+ * A milestone amount: a positive number, or a positive decimal string.
+ *
+ * The string form lets a client send exactly what the user typed instead of a
+ * binary float it round-tripped through `Number`, so the value the API stores
+ * and sums is the value that was entered (see `sumAmounts` in lib/assets.ts).
+ */
+const amountUsdcSchema = z.union([
+  z.number().positive(),
+  z
+    .string()
+    .regex(/^\d+(\.\d+)?$/, "Amount must be a positive decimal number")
+    .refine((value) => Number(value) > 0, "Amount must be greater than zero"),
+]);
+
 export const milestoneSchema = z.object({
   description: z.string().optional(),
-  amountUsdc: z.number().positive(),
+  amountUsdc: amountUsdcSchema,
   deadline: z.string().datetime().optional(),
 });
 
