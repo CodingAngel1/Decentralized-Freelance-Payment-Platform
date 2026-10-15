@@ -137,6 +137,25 @@ Any managed Postgres works. [Tiger Cloud](https://www.tigerdata.com/cloud) has a
 free tier (two services, 750 MB each) and speaks plain PostgreSQL, so Prisma
 needs no changes.
 
+### Runtime users in the containers
+
+Neither image runs as root (issue #112):
+
+| Image | Runtime user | Notes |
+|-------|--------------|-------|
+| `backend/Dockerfile` | `node` (uid 1000, from `node:20-alpine`) | The process only reads the image (`dist`, `node_modules`, `prisma/`) and writes to the database; `/tmp` and `/home/node` are the writable paths and are owned by `node`. Port 3000 (>1024) binds fine unprivileged. |
+| `frontend/Dockerfile` | `nginx` (uid 101, from `nginxinc/nginx-unprivileged`) | Pid file and nginx temp paths live under `/tmp`. **Listens on 8080**, not 80 — a non-root process cannot bind a privileged port. |
+
+Consequences for hosts:
+
+- If you run the frontend container anywhere other than `docker-compose.yml`,
+  map your host port to **8080** (`-p 8080:8080` or a proxy upstream of 8080).
+- `docker compose exec backend id` / `docker compose exec frontend id` should
+  report a non-root uid — use that as the smoke test after any Dockerfile change.
+- Nothing in either container needs a writable image layer; if you add file
+  logging or uploads, give the path an explicit owner (`COPY --chown=...`)
+  rather than reverting to root.
+
 ### Health and sanity checks after deploying
 
 ```bash
