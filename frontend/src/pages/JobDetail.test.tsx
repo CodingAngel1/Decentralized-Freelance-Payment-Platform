@@ -74,7 +74,14 @@ const DISPUTED = {
   ],
 };
 
-/** A funded, undisputed escrow — the only state a dispute can be opened from. */
+/**
+ * A funded, undisputed escrow with one milestone still to release — the only
+ * state a dispute can be opened from.
+ *
+ * `BigInt(id)` on a non-numeric `:id` is #106 (tracked separately): the guard
+ * that should catch it is unreachable while the conversion throws, so nothing
+ * here asserts the crash.
+ */
 const ACTIVE = {
   ...COMPLETED,
   status: "Active",
@@ -132,17 +139,6 @@ function submitRatingForm(): void {
   if (!form) throw new Error("rating form not found");
   fireEvent.submit(form);
 }
-
-/**
- * A live escrow with one milestone still to release. `BigInt(id)` on a
- * non-numeric `:id` is #106 (tracked separately): the guard that should catch it
- * is unreachable while the conversion throws, so nothing here asserts the crash.
- */
-const ACTIVE = {
-  ...COMPLETED,
-  status: "Active",
-  milestones: [{ amount: 20_000_000n, released: false, released_amount: 0n, deadline: 0n }],
-};
 
 /** The same escrow once its only milestone has been paid out. */
 const ACTIVE_RELEASED = {
@@ -212,9 +208,16 @@ describe("JobDetail actions", () => {
     h.escrow.getEscrow.mockResolvedValue(ACTIVE);
     render(<JobDetail />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open dispute" }));
+    await screen.findByRole("button", { name: "Open dispute" });
+    // The action is gated on a reason the panel can rule on (#86), so the
+    // participant has to give one before the contract call can happen.
+    const reason = "The milestone was never delivered";
+    fireEvent.change(screen.getByLabelText(/Reason for the dispute/), {
+      target: { value: reason },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dispute" }));
 
-    await waitFor(() => expect(h.escrow.openDispute).toHaveBeenCalledWith(7n));
+    await waitFor(() => expect(h.escrow.openDispute).toHaveBeenCalledWith(7n, reason));
   });
 
   it("does not offer a dispute to a wallet with no stake in the job", async () => {
