@@ -13,10 +13,9 @@ import {
   SorobanRpc,
   TransactionBuilder,
   BASE_FEE,
-  nativeToScVal,
-  Address,
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
+import { buildReputationSubmitArgs } from "../lib/scval";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -60,10 +59,7 @@ reputationRouter.post("/", requireAuth, validate(submitSchema), async (req, res,
       .addOperation(
         contract.call(
           "submit",
-          Address.fromString(raterAddress).toScVal(),
-          Address.fromString(rateeAddress).toScVal(),
-          nativeToScVal(job.escrowId),
-          nativeToScVal(score),
+          ...buildReputationSubmitArgs(raterAddress, rateeAddress, job.escrowId, score),
         ),
       )
       .setTimeout(30)

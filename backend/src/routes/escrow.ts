@@ -20,10 +20,14 @@ import {
   SorobanRpc,
   TransactionBuilder,
   BASE_FEE,
-  nativeToScVal,
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
 import { buildCreateArgs } from "../lib/escrowArgs";
+import {
+  buildFundArgs,
+  buildReclaimArgs,
+  buildReleaseMilestoneArgs,
+} from "../lib/scval";
 import { getAsset, toBaseUnits, UnknownAssetError } from "../lib/assets";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
@@ -106,7 +110,7 @@ escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: z.nu
     const contract = new Contract(config.ESCROW_CONTRACT_ID);
     const xdr = await buildTx(
       res.locals.stellarAddress,
-      contract.call("fund", nativeToScVal(BigInt(req.body.escrowId))),
+      contract.call("fund", ...buildFundArgs(req.body.escrowId)),
     );
     res.json({ xdr });
   } catch (err) {
@@ -123,7 +127,10 @@ escrowRouter.post("/build/release", requireAuth, validate(releaseSchema), async 
     const contract = new Contract(config.ESCROW_CONTRACT_ID);
     const xdr = await buildTx(
       res.locals.stellarAddress,
-      contract.call("release_milestone", nativeToScVal(BigInt(escrowId)), nativeToScVal(milestoneIndex)),
+      contract.call(
+        "release_milestone",
+        ...buildReleaseMilestoneArgs(escrowId, milestoneIndex),
+      ),
     );
     res.json({ xdr });
   } catch (err) {
@@ -137,7 +144,7 @@ escrowRouter.post("/build/reclaim", requireAuth, validate(z.object({ escrowId: z
     const contract = new Contract(config.ESCROW_CONTRACT_ID);
     const xdr = await buildTx(
       res.locals.stellarAddress,
-      contract.call("reclaim_expired", nativeToScVal(BigInt(req.body.escrowId))),
+      contract.call("reclaim_expired", ...buildReclaimArgs(req.body.escrowId)),
     );
     res.json({ xdr });
   } catch (err) {
