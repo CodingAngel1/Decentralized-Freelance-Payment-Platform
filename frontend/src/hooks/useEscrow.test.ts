@@ -120,6 +120,66 @@ describe("useEscrow transaction state", () => {
     await waitFor(() => expect(result.current.hasPendingWrite()).toBe(false));
   });
 
+  it("submits the dispute-timelock reclaim as escrow.reclaim_after_dispute_timeout", async () => {
+    const { result } = renderHook(() => useEscrow());
+
+    await act(async () => {
+      await result.current.reclaimDisputed(7n);
+    });
+
+    const [pk, contractId, method, args] = h.buildContractCall.mock.calls[0] as unknown as [
+      string,
+      string,
+      string,
+      unknown[],
+    ];
+    expect(pk).toBe("GCLIENT");
+    expect(contractId).toBe("CESCROW");
+    expect(method).toBe("reclaim_after_dispute_timeout");
+    expect(args).toHaveLength(1);
+    expect(scU64).toHaveBeenCalledWith(7n);
+  });
+
+  it("counts a dispute reclaim as a pending write so background polling pauses", async () => {
+    const settle = deferredBuild();
+    const { result } = renderHook(() => useEscrow());
+
+    act(() => {
+      void result.current.reclaimDisputed(1n);
+    });
+
+    await waitFor(() => expect(result.current.isPending("reclaim", "1")).toBe(true));
+    expect(result.current.hasPendingWrite()).toBe(true);
+
+    await act(async () => {
+      settle();
+    });
+    await waitFor(() => expect(result.current.hasPendingWrite()).toBe(false));
+  });
+
+  it("reads the dispute deadline through the escrow view", async () => {
+    h.readContract.mockResolvedValueOnce(1_700_000_000n);
+    const { result } = renderHook(() => useEscrow());
+
+    let deadline: bigint | undefined;
+    await act(async () => {
+      deadline = await result.current.getDisputeDeadline(7n);
+    });
+
+    expect(deadline).toBe(1_700_000_000n);
+    const [pk, contractId, method, args] = h.readContract.mock.calls[0] as unknown as [
+      string,
+      string,
+      string,
+      unknown[],
+    ];
+    expect(pk).toBe("GCLIENT");
+    expect(contractId).toBe("CESCROW");
+    expect(method).toBe("dispute_deadline");
+    expect(args).toHaveLength(1);
+    expect(scU64).toHaveBeenCalledWith(7n);
+  });
+
   it("counts a rating as a pending write so background polling pauses", async () => {
     const settle = deferredBuild();
     const { result } = renderHook(() => useEscrow());

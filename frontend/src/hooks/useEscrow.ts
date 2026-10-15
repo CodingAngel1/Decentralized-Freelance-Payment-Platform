@@ -76,11 +76,12 @@ export type OpKind =
   | "create"
   | "release"
   | "dispute"
+  | "reclaim"
   | "read"
   | "reputation"
   | "rate";
 
-const WRITE_KINDS: OpKind[] = ["create", "release", "dispute", "rate"];
+const WRITE_KINDS: OpKind[] = ["create", "release", "dispute", "reclaim", "rate"];
 
 /**
  * The last operation that failed, so a caller can react to a specific contract
@@ -230,6 +231,26 @@ export function useEscrow() {
   );
 
   /**
+   * The client reclaims a `Disputed` escrow once the dispute timelock has
+   * passed with no ruling (the panel-never-rules escape hatch).
+   *
+   * `escrow.reclaim_after_dispute_timeout(escrow_id)` requires the client's auth
+   * on-chain and rejects the call while the escrow is not `Disputed`
+   * (`InvalidStatus`) or before the deadline (`DisputeTimeoutNotReached`). The
+   * deadline is the `dispute_deadline` read below. On success the escrow moves
+   * to `Refunded`.
+   */
+  const reclaimDisputed = useCallback(
+    (escrowId: bigint) =>
+      run("reclaim", `${escrowId}`, (pk) =>
+        submit(pk, CONTRACT_ADDRESSES.escrow, "reclaim_after_dispute_timeout", [
+          scU64(escrowId),
+        ]),
+      ),
+    [run, submit],
+  );
+
+  /**
    * Rate the counterparty once the escrow is completed.
    *
    * `reputation.submit(rater, ratee, escrow_id, score)` verifies on-chain that
@@ -259,6 +280,22 @@ export function useEscrow() {
     [run],
   );
 
+  /**
+   * Read the dispute timelock deadline (unix seconds) for an escrow (view).
+   *
+   * Set when `open_dispute` runs; the client may reclaim once the ledger clock
+   * is past it. Returns `NotInitialized` for an escrow that never opened one.
+   */
+  const getDisputeDeadline = useCallback(
+    (escrowId: bigint) =>
+      run("read", `deadline:${escrowId}`, (pk) =>
+        readContract<bigint>(pk, CONTRACT_ADDRESSES.escrow, "dispute_deadline", [
+          scU64(escrowId),
+        ]),
+      ),
+    [run],
+  );
+
   /** Read a user's reputation aggregate (view). */
   const getReputation = useCallback(
     (address: string) =>
@@ -274,8 +311,10 @@ export function useEscrow() {
     createAndFund,
     releaseMilestone,
     openDispute,
+    reclaimDisputed,
     submitRating,
     getEscrow,
+    getDisputeDeadline,
     getReputation,
     pendingOps,
     isPending,

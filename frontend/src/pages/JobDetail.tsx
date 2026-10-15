@@ -15,6 +15,9 @@
  *   `useEscrow.submitRating`) so the argument types are correct and the tx hash
  *   is available for the explorer link. The indexer mirrors the resulting
  *   `rated` event into the database, converging with any row the API created.
+ * - While `Disputed`, the page shows the on-chain `dispute_deadline` and, for the
+ *   client only, enables `reclaim_after_dispute_timeout` once that deadline has
+ *   passed — the escape hatch for a panel that never rules (docs/DISPUTES.md).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -26,6 +29,7 @@ import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
 import { assetForContractId, fromBaseUnits } from "../lib/assets";
 import { authenticate, fetchJobs, submitRating as recordRating } from "../lib/api";
+import { formatDeadline, formatRemaining, secondsUntil } from "../lib/time";
 
 const POLL_MS = 5_000;
 
@@ -56,7 +60,9 @@ export default function JobDetail() {
     getEscrow,
     releaseMilestone,
     openDispute,
+    reclaimDisputed,
     submitRating,
+    getDisputeDeadline,
     isPending,
     hasPendingWrite,
     error,
@@ -66,6 +72,10 @@ export default function JobDetail() {
   const [escrow, setEscrow] = useState<EscrowView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [lastHash, setLastHash] = useState<string | null>(null);
+  // Dispute timelock: the deadline read from the contract (unix seconds) plus a
+  // 1s clock so the remaining time ticks without re-reading the chain each tick.
+  const [disputeDeadline, setDisputeDeadline] = useState<bigint | null>(null);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   const [score, setScore] = useState(0);
   const [comment, setComment] = useState("");
@@ -81,15 +91,33 @@ export default function JobDetail() {
     // Don't let a background poll clobber state with a read that raced a write.
     if (hasPendingWrite()) return;
     const data = await getEscrow(escrowId);
-    if (data) setEscrow(data);
-    else setLoadError("Could not load escrow (is the id correct?)");
-  }, [escrowId, getEscrow, hasPendingWrite]);
+    if (data) {
+      setEscrow(data);
+      // The deadline is immutable once set, but re-reading it on the poll keeps
+      // the action available even if the first read raced the dispute opening.
+      if (data.status === "Disputed") {
+        const deadline = await getDisputeDeadline(escrowId);
+        if (deadline !== undefined) setDisputeDeadline(deadline);
+      } else {
+        setDisputeDeadline(null);
+      }
+    } else setLoadError("Could not load escrow (is the id correct?)");
+  }, [escrowId, getEscrow, getDisputeDeadline, hasPendingWrite]);
 
   useEffect(() => {
     void refresh();
     const timer = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  // Tick the countdown while a dispute is live, so "refundable in 2d 3h" is
+  // accurate to the second between the 5s escrow polls.
+  useEffect(() => {
+    if (escrow?.status !== "Disputed") return;
+    setNow(Math.floor(Date.now() / 1000));
+    const timer = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1_000);
+    return () => clearInterval(timer);
+  }, [escrow?.status]);
 
   // The 5s poll resets `lastFailure` on every read, so latch the rejection
   // instead of reading the hook's state directly.
@@ -123,6 +151,9 @@ export default function JobDetail() {
   const canRate = isParticipant && isCompleted && counterparty !== null;
   const showRatingForm = canRate && !rated && !alreadyRated;
   const ratingDone = canRate && (rated || alreadyRated);
+  const isDisputed = escrow?.status === "Disputed";
+  // The contract requires `ledger.timestamp() > deadline`, so equality is not enough.
+  const deadlinePassed = disputeDeadline !== null && BigInt(now) > disputeDeadline;
 
   /** Store the optional comment off-chain; the rating itself is already on-chain. */
   async function saveComment(text: string, ratee: string) {
@@ -231,8 +262,44 @@ export default function JobDetail() {
               Open dispute
             </button>
           )}
-          {escrow.status === "Disputed" && (
-            <p className="muted">This escrow is frozen pending arbitration.</p>
+          {isDisputed && (
+            <section>
+              <p className="muted">This escrow is frozen pending arbitration.</p>
+              {disputeDeadline !== null &&
+                (deadlinePassed ? (
+                  <p className="muted">
+                    The 7-day dispute timelock has passed. Unreleased funds can be reclaimed.
+                  </p>
+                ) : (
+                  <p className="muted">
+                    Reclaimable only after {""}
+                    <time dateTime={new Date(Number(disputeDeadline) * 1000).toISOString()}>
+                      {formatDeadline(disputeDeadline)}
+                    </time>{" "}
+                    ({formatRemaining(secondsUntil(disputeDeadline, now))} left).
+                  </p>
+                ))}
+              {isClient && (
+                <button
+                  disabled={!deadlinePassed || isPending("reclaim", `${escrowId}`)}
+                  title={
+                    deadlinePassed
+                      ? "Refund the unreleased funds to your wallet"
+                      : "The dispute timelock has not passed yet"
+                  }
+                  onClick={() =>
+                    void reclaimDisputed(escrowId).then((res) => {
+                      if (res) setLastHash(res.hash);
+                      void refresh();
+                    })
+                  }
+                >
+                  {isPending("reclaim", `${escrowId}`)
+                    ? "Reclaiming…"
+                    : "Reclaim after timeout"}
+                </button>
+              )}
+            </section>
           )}
 
           {showRatingForm && (

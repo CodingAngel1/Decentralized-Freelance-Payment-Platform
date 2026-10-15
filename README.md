@@ -171,6 +171,7 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/escrow/build/fund` | ✅ | Build `escrow.fund` |
 | `POST` | `/api/escrow/build/release` | ✅ | Build `escrow.release_milestone` |
 | `POST` | `/api/escrow/build/reclaim` | ✅ | Build `escrow.reclaim_expired` |
+| `POST` | `/api/escrow/build/reclaim-dispute` | ✅ | Build `escrow.reclaim_after_dispute_timeout` (client, after the 7-day dispute timelock) |
 | `POST` | `/api/escrow/build/update-milestones` | ✅ | Build `escrow.update_milestones` (client, before funding) |
 | `PUT` | `/api/escrow/:escrowId/milestones` | ✅ | Record a confirmed milestone edit |
 | `POST` | `/api/escrow/sync/:jobId` | ✅ | Link an escrow id to a job |
