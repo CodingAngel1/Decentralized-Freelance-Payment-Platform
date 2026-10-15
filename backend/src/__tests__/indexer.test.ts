@@ -5,7 +5,12 @@ import {
   decodeEventName,
   type ContractEventLike,
 } from "../lib/events";
-import { processContractEvents, resolveStartLedger } from "../indexer";
+import {
+  applyRatedEvent,
+  processContractEvents,
+  resolveStartLedger,
+  type RatedStores,
+} from "../indexer";
 
 /** Build an ScMap the way `#[contractevent]` data is encoded. */
 function mapVal(entries: Record<string, xdr.ScVal>): xdr.ScVal {
@@ -269,5 +274,139 @@ describe("processContractEvents", () => {
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(onError).toHaveBeenCalledTimes(1);
     expect(next).toBe(11);
+  });
+});
+
+/**
+ * In-memory stand-in for the store `applyRatedEvent` writes through, so the
+ * "one row, no duplicate" property can be asserted without a database.
+ */
+class FakeRatedStore implements RatedStores {
+  readonly jobs: Array<{ id: string; escrowId: bigint }> = [];
+  readonly users = new Map<string, { id: string }>();
+  readonly ratings = new Map<
+    string,
+    { jobId: string; raterId: string; rateeId: string; score: number }
+  >();
+  private seq = 0;
+
+  private userId(address: string): { id: string } {
+    let user = this.users.get(address);
+    if (!user) {
+      user = { id: `user-${++this.seq}` };
+      this.users.set(address, user);
+    }
+    return user;
+  }
+
+  /** Pre-seed a user, as `POST /api/reputation` would have via `authenticate`. */
+  seedUser(address: string): { id: string } {
+    return this.userId(address);
+  }
+
+  /** Pre-seed the row `POST /api/reputation` writes before the tx lands. */
+  seedRating(row: {
+    jobId: string;
+    raterId: string;
+    rateeId: string;
+    score: number;
+  }): void {
+    this.ratings.set(`${row.raterId}:${row.jobId}`, { ...row });
+  }
+
+  job = {
+    findUnique: async ({ where }: { where: { escrowId: bigint } }) =>
+      this.jobs.find((job) => job.escrowId === where.escrowId) ?? null,
+  };
+
+  user = {
+    upsert: async ({ where }: { where: { stellarAddress: string } }) =>
+      this.userId(where.stellarAddress),
+  };
+
+  rating = {
+    upsert: async ({
+      where,
+      create,
+      update,
+    }: {
+      where: { raterId_jobId: { raterId: string; jobId: string } };
+      create: { jobId: string; raterId: string; rateeId: string; score: number };
+      update: { rateeId: string; score: number };
+    }) => {
+      const key = `${where.raterId_jobId.raterId}:${where.raterId_jobId.jobId}`;
+      const existing = this.ratings.get(key);
+      const next = existing ? { ...existing, ...update } : { ...create };
+      this.ratings.set(key, next);
+      return next;
+    },
+  };
+}
+
+describe("rated events", () => {
+  const RATER = Keypair.random().publicKey();
+  const RATEE = Keypair.random().publicKey();
+
+  /** The decoded payload of a `rated` event, as RPC would return it. */
+  function ratedData(overrides: Record<string, xdr.ScVal> = {}) {
+    return decodeEventData(
+      makeEvent("rated", {
+        escrow_id: nativeToScVal(7n, { type: "u64" }),
+        rater: Address.fromString(RATER).toScVal(),
+        ratee: Address.fromString(RATEE).toScVal(),
+        score: nativeToScVal(4, { type: "u32" }),
+        count: nativeToScVal(1n, { type: "u64" }),
+        total_score: nativeToScVal(4n, { type: "u64" }),
+        ...overrides,
+      }),
+    );
+  }
+
+  it("creates exactly one Rating row from a rated event", async () => {
+    const db = new FakeRatedStore();
+    db.jobs.push({ id: "job-1", escrowId: 7n });
+
+    const outcome = await applyRatedEvent(db, ratedData());
+
+    expect(outcome).toEqual({ status: "applied", jobId: "job-1", score: 4 });
+    expect(db.ratings.size).toBe(1);
+    const [row] = [...db.ratings.values()];
+    expect(row).toMatchObject({ jobId: "job-1", score: 4 });
+    // Both participants were materialised, so the ratee resolves to a real row.
+    expect(row.rateeId).toBe(db.seedUser(RATEE).id);
+  });
+
+  it("converges with a row POST /api/reputation already created instead of duplicating", async () => {
+    const db = new FakeRatedStore();
+    db.jobs.push({ id: "job-1", escrowId: 7n });
+    const rater = db.seedUser(RATER);
+    const ratee = db.seedUser(RATEE);
+    // The API wrote the row (with a placeholder score) before the tx landed.
+    db.seedRating({ jobId: "job-1", raterId: rater.id, rateeId: ratee.id, score: 1 });
+
+    await applyRatedEvent(db, ratedData());
+
+    expect(db.ratings.size).toBe(1);
+    // The on-chain score wins — updated in place, not inserted twice.
+    expect([...db.ratings.values()][0].score).toBe(4);
+  });
+
+  it("skips a rated event for an escrow that has no job record", async () => {
+    const db = new FakeRatedStore();
+
+    const outcome = await applyRatedEvent(db, ratedData());
+
+    expect(outcome).toEqual({ status: "skipped", reason: "unknown-job" });
+    expect(db.ratings.size).toBe(0);
+    expect(db.users.size).toBe(0);
+  });
+
+  it("skips a malformed rated event without throwing", async () => {
+    const db = new FakeRatedStore();
+
+    const outcome = await applyRatedEvent(db, { escrow_id: "not-a-number" });
+
+    expect(outcome).toEqual({ status: "skipped", reason: "malformed" });
+    expect(db.ratings.size).toBe(0);
   });
 });

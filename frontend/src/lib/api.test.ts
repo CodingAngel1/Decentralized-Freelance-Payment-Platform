@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { authenticate, buildJobsQuery, createJob } from "./api";
+import { authenticate, buildJobsQuery, createJob, submitRating } from "./api";
 
 describe("buildJobsQuery", () => {
   it("omits empty filters", () => {
@@ -82,5 +82,53 @@ describe("createJob", () => {
     expect(init.method).toBe("POST");
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-1");
     expect(JSON.parse(init.body as string).asset).toBe("XLM");
+  });
+});
+
+describe("submitRating", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("POSTs the rating with a bearer token and returns the row + xdr", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          rating: { id: "rating-1", jobId: "job-1", score: 5, comment: "great work" },
+          xdr: "AAAA",
+        }),
+        { status: 201 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await submitRating(
+      { jobId: "job-1", rateeAddress: "GRATEE", score: 5, comment: "great work" },
+      "jwt-1",
+    );
+
+    expect(res.rating.id).toBe("rating-1");
+    expect(res.xdr).toBe("AAAA");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/reputation");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-1");
+    expect(JSON.parse(init.body as string)).toEqual({
+      jobId: "job-1",
+      rateeAddress: "GRATEE",
+      score: 5,
+      comment: "great work",
+    });
+  });
+
+  it("throws with the status when the API rejects the rating", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 400 })),
+    );
+
+    await expect(
+      submitRating({ jobId: "job-1", rateeAddress: "GRATEE", score: 5 }, "jwt-1"),
+    ).rejects.toThrow(/HTTP 400/);
   });
 });

@@ -67,10 +67,10 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | `dispute` contract | ✅ Complete — verified raise, M-of-N arbitrator panel, resolution that calls back into escrow, dispute timelock |
 | `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings, amount-weighted aggregates, per-pair anti-spam (`docs/REPUTATION.md`) |
 | Contract tests | ✅ 84 tests: 81 unit tests (escrow 49, dispute 17, reputation 15) covering every state transition and failure path, plus 3 end-to-end tests in `contracts/dispute/tests/full_flow.rs` that drive escrow + dispute + reputation together |
-| Backend tests | ✅ 43 tests |
-| Frontend tests | ✅ 20 tests (Vitest + Testing Library) |
+| Backend tests | ✅ 47 tests |
+| Frontend tests | ✅ 33 tests (Vitest + Testing Library) |
 | Testnet deployment | ✅ Deployed and initialized (ids in [`deployments/testnet.json`](./deployments/testnet.json)) |
-| Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, read reputation |
+| Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation |
 | Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC, with a dead-letter table for events it cannot apply |
 | Job discovery / filtering | ✅ Dashboard lists jobs with status/pagination (from the backend API) |
 | Multi-arbitrator / timelocked disputes | ✅ Panel with a timelock escape hatch from `Disputed` (see [`docs/DISPUTES.md`](./docs/DISPUTES.md)) |
@@ -191,7 +191,7 @@ React + TypeScript + Vite, with Freighter for signing.
 |-------|------|---------|
 | `/` | `Dashboard` | Filterable, paginated job list from the API |
 | `/post` | `PostJob` | Milestones + asset picker → on-chain create/fund, then the off-chain record |
-| `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, transaction links |
+| `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
 | `/profile/:address` | `Profile` | On-chain reputation and job history |
 
 Every write shows the transaction hash and a stellar.expert link, contract errors
@@ -324,13 +324,13 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 stellar contract build          # requires stellar-cli v25.2.0+
 
-# Backend — 43 tests
+# Backend — 47 tests
 cd backend
 npx prisma generate
 npx tsc --noEmit
 npm test
 
-# Frontend — 20 tests
+# Frontend — 33 tests
 cd frontend
 npm run lint
 npx tsc --noEmit

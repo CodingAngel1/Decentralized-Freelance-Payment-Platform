@@ -45,6 +45,8 @@ vi.mock("@stellar/stellar-sdk", () => ({
 }));
 
 import { useEscrow } from "./useEscrow";
+// The mocked helpers, so we can assert how the arguments are encoded.
+import { scU32, scU64 } from "../lib/stellar";
 
 beforeEach(() => {
   h.wallet.publicKey = "GCLIENT";
@@ -116,6 +118,71 @@ describe("useEscrow transaction state", () => {
       settle();
     });
     await waitFor(() => expect(result.current.hasPendingWrite()).toBe(false));
+  });
+
+  it("counts a rating as a pending write so background polling pauses", async () => {
+    const settle = deferredBuild();
+    const { result } = renderHook(() => useEscrow());
+
+    act(() => {
+      void result.current.submitRating(7n, "GRATEE", 5);
+    });
+
+    await waitFor(() => expect(result.current.isPending("rate", "7:GRATEE")).toBe(true));
+    expect(result.current.hasPendingWrite()).toBe(true);
+
+    await act(async () => {
+      settle();
+    });
+    await waitFor(() => expect(result.current.hasPendingWrite()).toBe(false));
+  });
+
+  it("submits a rating as reputation.submit with a u32 score", async () => {
+    const { result } = renderHook(() => useEscrow());
+
+    await act(async () => {
+      await result.current.submitRating(7n, "GRATEE", 5);
+    });
+
+    const [pk, contractId, method, args] = h.buildContractCall.mock.calls[0] as unknown as [
+      string,
+      string,
+      string,
+      unknown[],
+    ];
+    expect(pk).toBe("GCLIENT");
+    expect(contractId).toBe("CREP");
+    expect(method).toBe("submit");
+    expect(args).toHaveLength(4);
+    expect(scU64).toHaveBeenCalledWith(7n);
+    // The score must be u32; the i32 default from a bare number traps on-chain.
+    expect(scU32).toHaveBeenCalledWith(5);
+  });
+
+  it("surfaces AlreadyRated through lastFailure and a friendly message", async () => {
+    h.buildContractCall.mockRejectedValueOnce(new Error("HostError: Error(Contract, #5)"));
+    const { result } = renderHook(() => useEscrow());
+
+    await act(async () => {
+      await result.current.submitRating(7n, "GRATEE", 5);
+    });
+
+    expect(result.current.lastFailure).toEqual({ kind: "rate", code: 5 });
+    expect(result.current.error).toBe(
+      "That milestone index is out of range, or you've already rated this job.",
+    );
+  });
+
+  it("reports a non-contract failure without a code", async () => {
+    h.buildContractCall.mockRejectedValueOnce(new Error("wallet not connected"));
+    const { result } = renderHook(() => useEscrow());
+
+    await act(async () => {
+      await result.current.submitRating(7n, "GRATEE", 5);
+    });
+
+    expect(result.current.lastFailure).toEqual({ kind: "rate", code: null });
+    expect(result.current.error).toBe("wallet not connected");
   });
 
   it("clears a previous error after a subsequent successful read", async () => {
