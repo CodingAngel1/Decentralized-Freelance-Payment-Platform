@@ -121,7 +121,11 @@ model Dispute {
 enum DisputeStatus {
   RAISED
   UNDER_REVIEW
+  /// A panel ruled and the escrow was resolved with a split.
   RESOLVED
+  /// The escrow was refunded (expiry or dispute timelock) with no ruling.
+  /// Terminal: a refunded dispute is no longer open.
+  REFUNDED
 }
 
 // ---------------------------------------------------------------------------

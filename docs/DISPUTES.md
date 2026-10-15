@@ -55,6 +55,33 @@ a timelock escape hatch if they never do.
   `Refunded`. A late ruling then fails `escrow.resolve`'s status check, so funds
   cannot be paid out twice.
 
+## Off-chain record
+
+The backend indexer mirrors these events into `Job` and `Dispute` rows, and two
+properties of that mirror are deliberate:
+
+- **A `Dispute` row exists once the dispute is *raised*, not when it is opened.**
+  `escrow.open_dispute` emits `dispute_opened`, which only marks the job
+  `DISPUTED`: the on-chain dispute has no id or reason until `dispute.raise`, so
+  there is nothing to record. `dispute.raise` emits `raised`, and the indexer
+  creates the row then. A job can therefore be `DISPUTED` with an empty
+  `disputes[]` between the two transactions — that is the intended state, not a
+  dropped event.
+- **A refund is terminal and closes the dispute.** `refunded` is emitted by both
+  `reclaim_expired` and `reclaim_after_dispute_timeout`. The indexer sets the job
+  to `REFUNDED` and moves every still-open dispute for that escrow (`RAISED` or
+  `UNDER_REVIEW`) to the terminal `REFUNDED` status, stamping `resolvedAt`. A
+  `RESOLVED` dispute means a panel ruled; a `REFUNDED` dispute means the funds
+  went back to the client without a ruling. `refunded` cannot arrive twice for
+  the same escrow (both refund paths are terminal), and no later event touches a
+  refunded dispute.
+
+So `Dispute.status` has exactly two terminal values — `RESOLVED` and `REFUNDED`
+— and any query for "open disputes" should filter on `RAISED`/`UNDER_REVIEW`.
+The `clientShare`/`freelancerShare` of a `REFUNDED` dispute are **not** a
+settlement split: a refund sends the entire remaining balance to the client, and
+the indexer does not invent a share split it was never told.
+
 ## Residual risks
 
 - The panel is a **trusted set**, not sybil-resistant. Their selection is an
