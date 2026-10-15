@@ -13,6 +13,12 @@
  *
  * Never throws: an unrecognized message is returned unchanged so a genuinely
  * unexpected failure is still visible rather than swallowed.
+ *
+ * Contributor Notes:
+ * - The discriminant is only unique *per contract*: escrow `#7` is
+ *   `ZeroAmount` while dispute `#7` is `EscrowNotDisputed`. A route therefore
+ *   passes the map for the contract it is calling, or the client gets a
+ *   confidently wrong explanation.
  */
 
 /** `EscrowError` discriminants from `contracts/interface/src/lib.rs`. */
@@ -35,6 +41,23 @@ export const ESCROW_ERROR_MESSAGES: Record<number, string> = {
   16: "The dispute timeout hasn't been reached yet.",
 };
 
+/** `DisputeError` discriminants from `contracts/dispute/src/lib.rs`. */
+export const DISPUTE_ERROR_MESSAGES: Record<number, string> = {
+  1: "That dispute doesn't exist.",
+  2: "The dispute contract is already initialized.",
+  3: "The dispute contract isn't initialized yet.",
+  4: "The dispute isn't in a state that allows this action.",
+  5: "A dispute has already been raised for this escrow.",
+  6: "The escrow doesn't exist.",
+  7: "The escrow isn't disputed, so there is nothing to raise — call escrow.open_dispute first.",
+  8: "Only the escrow's client or freelancer can raise this dispute.",
+  9: "The escrow rejected the resolution (the shares must sum to the funds still held).",
+  10: "A numeric overflow occurred.",
+  11: "The arbitrator panel is invalid.",
+  12: "The approval threshold is invalid.",
+  13: "The panel hasn't approved that exact split enough times yet.",
+};
+
 /** Extract the `#N` discriminant from a Soroban contract error, if present. */
 export function parseContractErrorCode(message: string): number | null {
   const match = /Error\(Contract,\s*#(\d+)\)/.exec(message);
@@ -44,12 +67,18 @@ export function parseContractErrorCode(message: string): number | null {
 }
 
 /**
- * Map a simulation error to a readable message. Recognized escrow codes are
- * translated; anything else (host/crypto failures, RPC errors) keeps its
+ * Map a simulation error to a readable message. Recognized codes in `messages`
+ * are translated; anything else (host/crypto failures, RPC errors) keeps its
  * original text.
+ *
+ * Pass the map for the contract being called — the discriminants overlap
+ * between contracts (see the contributor notes above).
  */
-export function friendlyContractError(message: string): string {
+export function friendlyContractError(
+  message: string,
+  messages: Record<number, string> = ESCROW_ERROR_MESSAGES,
+): string {
   const code = parseContractErrorCode(message);
   if (code === null) return message;
-  return ESCROW_ERROR_MESSAGES[code] ?? message;
+  return messages[code] ?? message;
 }

@@ -85,6 +85,14 @@ export const scAddress = (address: string) => Address.fromString(address).toScVa
 export const scU64 = (n: bigint) => nativeToScVal(n, { type: "u64" });
 export const scU32 = (n: number) => nativeToScVal(n, { type: "u32" });
 export const scI128 = (n: bigint) => nativeToScVal(n, { type: "i128" });
+/**
+ * Soroban `String`, as `dispute.raise`'s `reason` argument.
+ *
+ * The type is spelled out because it must not be inferred: `nativeToScVal("x")`
+ * happens to pick String, but `Symbol` and `Bytes` are one keyword away and both
+ * would be rejected by the contract with a type error at simulation time.
+ */
+export const scString = (value: string) => nativeToScVal(value, { type: "string" });
 
 /** 1 unit == 1e7 stroops (USDC uses 7 decimal places on Stellar). */
 export const toStroops = (units: number) => BigInt(Math.round(units * 1e7));

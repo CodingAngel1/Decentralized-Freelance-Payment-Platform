@@ -18,6 +18,10 @@
  * - While `Disputed`, the page shows the on-chain `dispute_deadline` and, for the
  *   client only, enables `reclaim_after_dispute_timeout` once that deadline has
  *   passed — the escape hatch for a panel that never rules (docs/DISPUTES.md).
+ * - Opening a dispute takes a reason and runs two contract calls (see
+ *   `useEscrow.openDispute`): the escrow is frozen, then `dispute.raise` mints
+ *   the dispute the panel rules on. The id it returns is recorded against the
+ *   off-chain row, which is where the reason is kept for the panel to read.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -28,13 +32,19 @@ import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
 import { assetForContractId, fromBaseUnits } from "../lib/assets";
-import { authenticate, fetchJobs, submitRating as recordRating } from "../lib/api";
+import { authenticate, createDispute, fetchJobs, linkDisputeId, submitRating as recordRating } from "../lib/api";
 import { formatDeadline, formatRemaining, secondsUntil } from "../lib/time";
 
 const POLL_MS = 5_000;
 
 /** `ReputationError::AlreadyRated` (contracts/reputation/src/lib.rs). */
 const ALREADY_RATED = 5;
+
+/**
+ * Same floor the API enforces (`raiseSchema`): a reason the panel cannot read is
+ * not a reason, and the two limits must not drift.
+ */
+const MIN_REASON = 10;
 
 const SCORES = [1, 2, 3, 4, 5];
 
@@ -83,6 +93,10 @@ export default function JobDetail() {
   // Latched: the contract rejected the rating because this wallet already rated.
   const [alreadyRated, setAlreadyRated] = useState(false);
   const [commentNote, setCommentNote] = useState<string | null>(null);
+  // The dispute reason is what the panel rules on and is not recoverable if it
+  // is dropped, so it is validated before any transaction is built.
+  const [reason, setReason] = useState("");
+  const [disputeNote, setDisputeNote] = useState<string | null>(null);
 
   const escrowId = id ? BigInt(id) : null;
 
@@ -189,6 +203,56 @@ export default function JobDetail() {
     if (text) void saveComment(text, counterparty);
   }
 
+  /**
+   * Freeze the escrow, raise the dispute, then record it off-chain.
+   *
+   * The contract calls are `open_dispute` then `raise` (see
+   * `useEscrow.openDispute`). Only once `raise` has confirmed is there an id to
+   * store, and storing it is what makes `resolve` reachable without waiting for
+   * the indexer to catch up.
+   */
+  async function handleOpenDispute(e: React.FormEvent) {
+    e.preventDefault();
+    if (escrowId === null) return;
+    const text = reason.trim();
+    if (text.length < MIN_REASON) return;
+    setDisputeNote(null);
+    const res = await openDispute(escrowId, text);
+    if (!res) return; // the hook surfaced a friendly error
+    setLastHash(res.hash);
+    await saveDispute(escrowId, text, res.disputeId);
+    void refresh();
+  }
+
+  /**
+   * Store the off-chain dispute row: the reason, plus the id `raise` returned.
+   *
+   * The dispute is already on-chain by this point, so a failure here must not
+   * read as one — it is reported as its own note, because the panel reads the
+   * row and the row is the only copy of the reason.
+   */
+  async function saveDispute(escrow: bigint, text: string, disputeId: bigint) {
+    if (!publicKey) return;
+    try {
+      const jobId = await findJobIdByEscrow(escrow, publicKey);
+      if (!jobId) {
+        setDisputeNote(
+          "The dispute is on-chain. This job has no off-chain record, so the reason was not stored.",
+        );
+        return;
+      }
+      const token = await authenticate(publicKey, signMessage);
+      const { dispute } = await createDispute({ jobId, reason: text }, token);
+      await linkDisputeId(dispute.id, disputeId, token);
+    } catch (err) {
+      setDisputeNote(
+        `The dispute is on-chain, but its record was not saved: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   return (
     <Layout>
       <h1>Job #{id}</h1>
@@ -250,18 +314,37 @@ export default function JobDetail() {
           </ol>
 
           {isParticipant && isActive && (
-            <button
-              disabled={isPending("dispute", `${escrowId}`)}
-              onClick={() =>
-                void openDispute(escrowId).then((res) => {
-                  if (res) setLastHash(res.hash);
-                  void refresh();
-                })
-              }
-            >
-              Open dispute
-            </button>
+            <form onSubmit={handleOpenDispute}>
+              <p>
+                <label>
+                  Reason for the dispute
+                  <br />
+                  <textarea
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    minLength={MIN_REASON}
+                    maxLength={1000}
+                    rows={2}
+                    cols={60}
+                    placeholder="What went wrong? The arbitrator panel reads this."
+                    required
+                  />
+                </label>
+              </p>
+              <button
+                type="submit"
+                disabled={reason.trim().length < MIN_REASON || isPending("dispute", `${escrowId}`)}
+                title={
+                  reason.trim().length < MIN_REASON
+                    ? `A reason of at least ${MIN_REASON} characters is required`
+                    : "Freeze the escrow and raise a dispute"
+                }
+              >
+                {isPending("dispute", `${escrowId}`) ? "Opening…" : "Open dispute"}
+              </button>
+            </form>
           )}
+          {disputeNote && <p className="muted">{disputeNote}</p>}
           {isDisputed && (
             <section>
               <p className="muted">This escrow is frozen pending arbitration.</p>
