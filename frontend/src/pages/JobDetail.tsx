@@ -28,6 +28,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
+import AddressField from "../components/AddressField";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
@@ -276,10 +277,11 @@ export default function JobDetail() {
             Status: <StatusBadge status={escrow.status} />
           </p>
           <p>
-            Client: <code>{escrow.client}</code>
+            Client: <AddressField address={escrow.client} label="Client address" qr />
             {isClient && " (you)"}
             <br />
-            Freelancer: <code>{escrow.freelancer}</code>
+            Freelancer:{" "}
+            <AddressField address={escrow.freelancer} label="Freelancer address" qr />
             {isFreelancer && " (you)"}
             <br />
             Total: <strong>{fromBaseUnits(escrow.total_amount, decimals)}</strong> {symbol}
