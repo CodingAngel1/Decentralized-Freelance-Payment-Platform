@@ -220,7 +220,7 @@ React + TypeScript + Vite, with Freighter for signing.
 | Route | Page | Purpose |
 |-------|------|---------|
 | `/` | `Dashboard` | Filterable, paginated job list from the API |
-| `/post` | `PostJob` | Milestones + asset picker → on-chain create/fund, then the off-chain record |
+| `/post` | `PostJob` | Milestones (savable as reusable templates) + asset picker → on-chain create/fund, then the off-chain record |
 | `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
 | `/profile/:address` | `Profile` | On-chain reputation aggregate (weighted average + rating count) |
 
@@ -238,7 +238,9 @@ stellar.expert and shows the mapped contract-error message on failure
 unlike the inline messages alone. The job page carries the client↔freelancer
 conversation (`frontend/src/components/Conversation.tsx`); opening a thread
 records the read receipt, and unread counts appear next to each job and on the
-nav.
+nav. A milestone set can be saved as a template and re-applied from the
+post-a-job form (`frontend/src/lib/templates.ts`, stored per wallet in the
+browser).
 
 ## Stack
 

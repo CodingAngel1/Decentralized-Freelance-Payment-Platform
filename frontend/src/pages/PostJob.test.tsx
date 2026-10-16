@@ -113,6 +113,96 @@ async function renderTotal(amounts: string[]): Promise<string> {
   return screen.getByText(/^Total:/).textContent ?? "";
 }
 
+describe("PostJob templates", () => {
+  beforeEach(() => {
+    // The template store is browser storage; each test starts with none.
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  /** Fill the milestone rows with the given amounts, adding rows as needed. */
+  function fillAmounts(amounts: string[]): void {
+    for (let i = 1; i < amounts.length; i++) {
+      fireEvent.click(screen.getByRole("button", { name: "Add milestone" }));
+    }
+    amounts.forEach((amount, i) => {
+      fireEvent.change(screen.getByLabelText(new RegExp(`Amount #${i + 1}`)), {
+        target: { value: amount },
+      });
+    });
+  }
+
+  it("saves the current milestone set and re-applies it later", async () => {
+    await renderWithEnv({});
+    fillAmounts(["1.5", "2.5"]);
+
+    fireEvent.change(screen.getByLabelText(/Save these milestones as/i), {
+      target: { value: "Retainer" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save template" }));
+
+    // The template is offered in the picker from now on.
+    expect(screen.getByRole("option", { name: /Retainer/ })).toBeTruthy();
+
+    // Change the rows, then restore the saved set.
+    fireEvent.change(screen.getByLabelText(/Amount #1/), { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply template" }));
+
+    expect((screen.getByLabelText(/Amount #1/) as HTMLInputElement).value).toBe("1.5");
+    expect((screen.getByLabelText(/Amount #2/) as HTMLInputElement).value).toBe("2.5");
+  });
+
+  it("will not save a template before it has a name and an amount", async () => {
+    await renderWithEnv({});
+
+    const save = screen.getByRole("button", { name: "Save template" }) as HTMLButtonElement;
+    // No name, no amount.
+    expect(save.disabled).toBe(true);
+
+    fillAmounts(["1"]);
+    // Still nameless.
+    expect(save.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText(/Save these milestones as/i), {
+      target: { value: "Retainer" },
+    });
+    expect(save.disabled).toBe(false);
+  });
+
+  it("keeps one wallet's templates out of another's form", async () => {
+    h.wallet.publicKey = "GCLIENT";
+    await renderWithEnv({});
+    fillAmounts(["1"]);
+    fireEvent.change(screen.getByLabelText(/Save these milestones as/i), {
+      target: { value: "Retainer" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save template" }));
+    expect(screen.getByRole("option", { name: /Retainer/ })).toBeTruthy();
+
+    cleanup();
+    h.wallet.publicKey = "GOTHER";
+    await renderWithEnv({});
+
+    expect(screen.getByText("No saved templates yet.")).toBeTruthy();
+  });
+
+  it("deletes a saved template", async () => {
+    await renderWithEnv({});
+    fillAmounts(["1"]);
+    fireEvent.change(screen.getByLabelText(/Save these milestones as/i), {
+      target: { value: "Retainer" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save template" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(screen.getByText("No saved templates yet.")).toBeTruthy();
+  });
+});
+
 describe("PostJob total", () => {
   it("shows the exact decimal sum, not a float artefact", async () => {
     const text = await renderTotal(["0.1", "0.1", "0.1"]);

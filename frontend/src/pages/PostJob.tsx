@@ -13,9 +13,13 @@
  *
  * The escrow contract is asset-agnostic; `lib/assets.ts` maps the chosen symbol
  * to its SAC contract id and decimals.
+ *
+ * Milestone sets can be saved as templates and re-applied here, so a client who
+ * posts the same shape of job repeatedly does not retype it (issue #75).
+ * Templates live in the browser, keyed per wallet (`lib/templates.ts`).
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
 import { useEscrow, type CreateAndFundResult } from "../hooks/useEscrow";
@@ -23,6 +27,12 @@ import { useWallet } from "../hooks/wallet-context";
 import { ASSETS, formatAmount, getAsset, toBaseUnits } from "../lib/assets";
 import { authenticate, createJob, linkEscrowId } from "../lib/api";
 import { CONTRACT_ADDRESSES, explorerTxUrl } from "../lib/stellar";
+import {
+  deleteTemplate,
+  listTemplates,
+  saveTemplate,
+  type MilestoneTemplate,
+} from "../lib/templates";
 
 interface MilestoneRow {
   amount: string;
@@ -54,8 +64,19 @@ export default function PostJob() {
   const [rows, setRows] = useState<MilestoneRow[]>([{ amount: "" }]);
   const [created, setCreated] = useState<CreateAndFundResult | null>(null);
   const [recordError, setRecordError] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<MilestoneTemplate[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [templateNote, setTemplateNote] = useState<string | null>(null);
 
   const asset = getAsset(assetSymbol);
+
+  // Templates belong to the connected wallet, so they change when it does.
+  useEffect(() => {
+    setTemplates(publicKey ? listTemplates(publicKey) : []);
+    setSelectedTemplate("");
+    setTemplateNote(null);
+  }, [publicKey]);
 
   const updateRow = (i: number, amount: string) =>
     setRows((r) => r.map((row, idx) => (idx === i ? { amount } : row)));
@@ -67,6 +88,56 @@ export default function PostJob() {
     rows.reduce((sum, r) => sum + amountToBaseUnits(r.amount, asset.decimals), 0n),
     asset.decimals,
   );
+
+  /** Milestones with a usable amount, in the asset's base units. */
+  const pricedRows = () =>
+    rows.filter((row) => amountToBaseUnits(row.amount, asset.decimals) > 0n);
+
+  const canSaveTemplate = publicKey !== null && rows.some((r) => Number(r.amount) > 0);
+
+  /**
+   * Restore a saved milestone set: the amounts and, when this build has a SAC
+   * for it, the asset they were written in. An asset without a configured SAC
+   * is left alone rather than selected — a disabled option would block submit.
+   */
+  function applyTemplate(id: string) {
+    const template = templates.find((entry) => entry.id === id);
+    if (!template) return;
+
+    const savedAsset = ASSETS.find((entry) => entry.symbol === template.asset);
+    if (savedAsset?.contractId) setAssetSymbol(savedAsset.symbol);
+    setRows(
+      template.milestones.length > 0
+        ? template.milestones.map((milestone) => ({ amount: milestone.amount }))
+        : [{ amount: "" }],
+    );
+    setTemplateNote(`Applied “${template.name}”.`);
+  }
+
+  function handleSaveTemplate() {
+    if (!publicKey || !canSaveTemplate) return;
+    const saved = saveTemplate(publicKey, {
+      name: templateName,
+      asset: asset.symbol,
+      milestones: pricedRows().map((row) => ({ amount: row.amount })),
+    });
+    if (!saved) {
+      setTemplateNote("Could not save the template — give it a name first.");
+      return;
+    }
+    setTemplates(listTemplates(publicKey));
+    setSelectedTemplate(saved.id);
+    setTemplateName("");
+    setTemplateNote(`Saved template “${saved.name}”.`);
+  }
+
+  function handleDeleteTemplate() {
+    if (!publicKey || !selectedTemplate) return;
+    deleteTemplate(publicKey, selectedTemplate);
+    setTemplates(listTemplates(publicKey));
+    setSelectedTemplate("");
+    setTemplateNote("Template deleted.");
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -204,6 +275,75 @@ export default function PostJob() {
             />
           </label>
         </p>
+
+        <fieldset>
+          <legend>Templates</legend>
+          {!publicKey ? (
+            <p className="muted">Connect your wallet to save and reuse milestone templates.</p>
+          ) : (
+            <>
+              {templates.length === 0 ? (
+                <p className="muted">No saved templates yet.</p>
+              ) : (
+                <p>
+                  <label>
+                    Saved template{" "}
+                    <select
+                      value={selectedTemplate}
+                      onChange={(e) => setSelectedTemplate(e.target.value)}
+                    >
+                      <option value="">Choose…</option>
+                      {templates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name} ({template.milestones.length} milestones,{" "}
+                          {template.asset})
+                        </option>
+                      ))}
+                    </select>
+                  </label>{" "}
+                  <button
+                    type="button"
+                    onClick={() => applyTemplate(selectedTemplate)}
+                    disabled={!selectedTemplate}
+                  >
+                    Apply template
+                  </button>{" "}
+                  <button
+                    type="button"
+                    onClick={handleDeleteTemplate}
+                    disabled={!selectedTemplate}
+                  >
+                    Delete
+                  </button>
+                </p>
+              )}
+
+              <p>
+                <label>
+                  Save these milestones as{" "}
+                  <input
+                    value={templateName}
+                    onChange={(e) => setTemplateName(e.target.value)}
+                    placeholder="Weekly retainer"
+                    maxLength={60}
+                  />
+                </label>{" "}
+                <button
+                  type="button"
+                  onClick={handleSaveTemplate}
+                  disabled={templateName.trim().length === 0 || !canSaveTemplate}
+                >
+                  Save template
+                </button>
+              </p>
+              {templateNote && (
+                <p className="muted" role="status">
+                  {templateNote}
+                </p>
+              )}
+            </>
+          )}
+        </fieldset>
 
         <fieldset>
           <legend>Milestones ({asset.symbol})</legend>
