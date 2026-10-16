@@ -36,17 +36,34 @@ export function buildJobsQuery(query: JobListQuery = {}): string {
   return qs ? `?${qs}` : "";
 }
 
+export interface ProposalApi {
+  id: string;
+  jobId: string;
+  freelancerId: string;
+  coverLetter?: string | null;
+  proposedRate?: string | number | null;
+  status: "PENDING" | "ACCEPTED" | "REJECTED";
+  createdAt: string;
+  freelancer?: {
+    id: string;
+    stellarAddress: string;
+    displayName?: string | null;
+  };
+}
+
 export interface JobApi {
   id: string;
   /** On-chain escrow id, present only once the job has been funded on-chain. */
   escrowId: string | number | null;
   title: string;
+  description?: string;
   status: string;
   /** Asset symbol the job pays in (see lib/assets.ts). */
   asset?: string;
   totalAmountUsdc: string | number;
   client?: { stellarAddress: string; displayName?: string | null } | null;
   freelancer?: { stellarAddress: string } | null;
+  proposals?: ProposalApi[];
 }
 
 /** Fetch a page of jobs. Throws on a non-2xx response. */
@@ -59,6 +76,62 @@ export async function fetchJobs(
   });
   if (!res.ok) throw new Error(`Could not load jobs (HTTP ${res.status})`);
   return (await res.json()) as JobApi[];
+}
+
+/** Fetch a single job by id. */
+export async function fetchJob(id: string): Promise<JobApi> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`Could not load job (HTTP ${res.status})`);
+  return (await res.json()) as JobApi;
+}
+
+/** Fetch proposals for a job. */
+export async function fetchProposals(jobId: string): Promise<ProposalApi[]> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/proposals`);
+  if (!res.ok) throw new Error(`Could not load proposals (HTTP ${res.status})`);
+  return (await res.json()) as ProposalApi[];
+}
+
+/** Submit a proposal application for a job. */
+export async function submitProposal(
+  jobId: string,
+  input: { coverLetter?: string; proposedRate?: string | number },
+  token: string,
+): Promise<ProposalApi> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/proposals`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.error ?? `Could not submit proposal (HTTP ${res.status})`);
+  }
+  return (await res.json()) as ProposalApi;
+}
+
+/** Assign a freelancer to a job. */
+export async function assignFreelancer(
+  jobId: string,
+  freelancerAddress: string,
+  token: string,
+): Promise<JobApi> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/assign`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ freelancerAddress }),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.error ?? `Could not assign freelancer (HTTP ${res.status})`);
+  }
+  return (await res.json()) as JobApi;
 }
 
 // ---------------------------------------------------------------------------
