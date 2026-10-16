@@ -5,8 +5,9 @@
  * needs; `VITE_API_URL` configures the base URL (default localhost:3000).
  *
  * Contributor Notes:
- * - The backend indexer is still a stub, so jobs appear here only once created
- *   through the API — that is expected for now.
+ * - Jobs reach this client from the backend, whose contract-event indexer
+ *   (`backend/src/indexer.ts`) syncs chain state into the database. A job can
+ *   therefore appear here without this client having created it.
  * - `totalAmountUsdc`/`escrowId` come from Prisma and may serialize as strings.
  */
 

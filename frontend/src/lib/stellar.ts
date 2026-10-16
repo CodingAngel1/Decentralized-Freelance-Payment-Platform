@@ -27,6 +27,7 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
+import { fromBaseUnits, toBaseUnits } from "./assets";
 
 // ---------------------------------------------------------------------------
 // Network config
@@ -94,9 +95,20 @@ export const scI128 = (n: bigint) => nativeToScVal(n, { type: "i128" });
  */
 export const scString = (value: string) => nativeToScVal(value, { type: "string" });
 
-/** 1 unit == 1e7 stroops (USDC uses 7 decimal places on Stellar). */
-export const toStroops = (units: number) => BigInt(Math.round(units * 1e7));
-export const fromStroops = (stroops: bigint) => Number(stroops) / 1e7;
+// ---------------------------------------------------------------------------
+// Stroop conversion
+//
+// On-chain amounts are integer stroops at 7 decimal places. The arithmetic —
+// including the exact rounding a float would otherwise lose — lives in
+// `lib/assets.ts`; these are the stroop-named spelling of the same functions
+// and delegate to it so the two copies cannot drift (see issue #45).
+// ---------------------------------------------------------------------------
+
+/** Stroops per whole unit, i.e. the 7 decimals every entry in `ASSETS` uses. */
+const STROOP_DECIMALS = 7;
+
+export const toStroops = (units: number) => toBaseUnits(units, STROOP_DECIMALS);
+export const fromStroops = (stroops: bigint) => fromBaseUnits(stroops, STROOP_DECIMALS);
 
 export interface MilestoneInput {
   amount: bigint;
