@@ -1,9 +1,11 @@
 /**
  * users.ts
  *
- * POST /api/users/auth   — issue JWT after verifying a signed Stellar challenge
- * GET  /api/users/:addr  — get public profile
- * PUT  /api/users/me     — update display name / bio (auth required)
+ * POST /api/users/auth            — issue JWT after verifying a signed Stellar challenge
+ * GET  /api/users/:addr           — get public profile
+ * GET  /api/users/:addr/transactions — on-chain history for the user's escrows
+ * GET  /api/users/:addr/reminders — milestones that are due soon or overdue
+ * PUT  /api/users/me              — update display name / bio (auth required)
  *
  * Auth flow (challenge-response):
  *   1. Client calls GET /api/users/challenge?address=G...
@@ -16,7 +18,7 @@
  * restarts and work across instances.
  */
 
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { SignJWT } from "jose";
 import { prisma } from "../db";
@@ -27,6 +29,8 @@ import { AppError } from "../middleware/errorHandler";
 import { consumeNonce, issueNonce, type AuthNonceStore } from "../lib/authNonce";
 import { verifySignedMessage } from "../lib/signature";
 import { isValidStellarAddress } from "../lib/stellarAddress";
+import { formatBaseUnitsForAsset } from "../lib/assets";
+import { buildMilestoneReminders, parseHorizonHours } from "../lib/reminders";
 
 export const usersRouter = Router();
 
@@ -49,7 +53,7 @@ usersRouter.get("/challenge", async (req, res, next) => {
 });
 
 // POST /api/users/auth
-const authSchema = z.object({
+export const authSchema = z.object({
   address: z.string().refine(isValidStellarAddress, "Invalid Stellar address"),
   /** Base64-encoded signature of the nonce */
   signature: z.string(),
@@ -87,6 +91,124 @@ usersRouter.post("/auth", validate(authSchema), async (req, res, next) => {
   }
 });
 
+// GET /api/users/freelancers (and GET /api/users) — public freelancer directory (#68)
+const getFreelancersHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const sortBy = (
+      typeof req.query.sortBy === "string" ? req.query.sortBy : "reputation"
+    ).toLowerCase();
+    const sortOrder =
+      (typeof req.query.sortOrder === "string" ? req.query.sortOrder : "desc").toLowerCase() ===
+      "asc"
+        ? "asc"
+        : "desc";
+    const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10) || 20));
+
+    const where = search
+      ? {
+          OR: [
+            { stellarAddress: { contains: search, mode: "insensitive" as const } },
+            { displayName: { contains: search, mode: "insensitive" as const } },
+            { bio: { contains: search, mode: "insensitive" as const } },
+          ],
+        }
+      : {};
+
+    const users = await prisma.user.findMany({
+      where,
+      include: {
+        ratingsReceived: {
+          select: { score: true },
+        },
+        jobsAsFreelancer: {
+          select: { id: true, status: true },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const formatted = users.map((user) => {
+      const totalRatings = user.ratingsReceived.length;
+      const sumScore = user.ratingsReceived.reduce((acc, r) => acc + r.score, 0);
+      const averageScore = totalRatings > 0 ? Number((sumScore / totalRatings).toFixed(2)) : 0;
+      const completedJobsCount = user.jobsAsFreelancer.filter(
+        (j) => j.status === "COMPLETED",
+      ).length;
+      const totalJobsCount = user.jobsAsFreelancer.length;
+
+      return {
+        id: user.id,
+        stellarAddress: user.stellarAddress,
+        displayName: user.displayName,
+        bio: user.bio,
+        createdAt: user.createdAt,
+        averageScore,
+        totalRatings,
+        completedJobsCount,
+        totalJobsCount,
+      };
+    });
+
+    formatted.sort((a, b) => {
+      if (sortBy === "jobs") {
+        if (a.completedJobsCount !== b.completedJobsCount) {
+          return sortOrder === "asc"
+            ? a.completedJobsCount - b.completedJobsCount
+            : b.completedJobsCount - a.completedJobsCount;
+        }
+        return sortOrder === "asc"
+          ? a.totalRatings - b.totalRatings
+          : b.totalRatings - a.totalRatings;
+      }
+
+      if (sortBy === "recent") {
+        const timeA = new Date(a.createdAt).getTime();
+        const timeB = new Date(b.createdAt).getTime();
+        return sortOrder === "asc" ? timeA - timeB : timeB - timeA;
+      }
+
+      // Default: "reputation"
+      if (a.averageScore !== b.averageScore) {
+        return sortOrder === "asc"
+          ? a.averageScore - b.averageScore
+          : b.averageScore - a.averageScore;
+      }
+      if (a.totalRatings !== b.totalRatings) {
+        return sortOrder === "asc"
+          ? a.totalRatings - b.totalRatings
+          : b.totalRatings - a.totalRatings;
+      }
+      return sortOrder === "asc"
+        ? a.completedJobsCount - b.completedJobsCount
+        : b.completedJobsCount - a.completedJobsCount;
+    });
+
+    const total = formatted.length;
+    const totalPages = Math.ceil(total / limit) || 1;
+    const offset = (page - 1) * limit;
+    const paged = formatted.slice(offset, offset + limit);
+
+    res.json({
+      freelancers: paged,
+      total,
+      page,
+      limit,
+      totalPages,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+usersRouter.get("/freelancers", getFreelancersHandler);
+usersRouter.get("/", getFreelancersHandler);
+
 // GET /api/users/:address
 usersRouter.get("/:address", async (req, res, next) => {
   try {
@@ -102,7 +224,7 @@ usersRouter.get("/:address", async (req, res, next) => {
 });
 
 // PUT /api/users/me
-const updateSchema = z.object({
+export const updateSchema = z.object({
   displayName: z.string().max(80).optional(),
   bio: z.string().max(500).optional(),
 });

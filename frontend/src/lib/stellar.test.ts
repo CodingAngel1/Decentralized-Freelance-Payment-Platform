@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { scValToNative } from "@stellar/stellar-sdk";
-import { milestonesToScVal, type MilestoneInput } from "./stellar";
+import { fromBaseUnits, toBaseUnits } from "./assets";
+import { fromStroops, milestonesToScVal, toStroops, type MilestoneInput } from "./stellar";
 
 describe("milestonesToScVal", () => {
   it("round-trips milestones with the contract's field names", () => {
@@ -36,5 +37,26 @@ describe("milestonesToScVal", () => {
 
   it("encodes an empty list as an empty vector", () => {
     expect(scValToNative(milestonesToScVal([]))).toEqual([]);
+  });
+});
+
+describe("stroop conversion", () => {
+  // Issue #45: `toStroops`/`fromStroops` used to reimplement the fixed 1e7
+  // case. They now delegate to the single implementation in `lib/assets.ts`,
+  // and these assertions pin that they stay identical to it.
+  it("matches the shared base-unit helpers across a range of values", () => {
+    for (const units of [0, 1, 1.5, 0.1, 0.3, 123.456789, 2]) {
+      expect(toStroops(units)).toBe(toBaseUnits(units, 7));
+    }
+    for (const stroops of [0n, 1n, 15_000_000n, 3_000_000n]) {
+      expect(fromStroops(stroops)).toBe(fromBaseUnits(stroops, 7));
+    }
+  });
+
+  it("converts exactly, without a multiply-then-round that a float could skew", () => {
+    expect(toStroops(1.5)).toBe(15_000_000n);
+    expect(toStroops(0.1)).toBe(1_000_000n);
+    expect(fromStroops(15_000_000n)).toBeCloseTo(1.5);
+    expect(fromStroops(toStroops(0.1))).toBeCloseTo(0.1);
   });
 });

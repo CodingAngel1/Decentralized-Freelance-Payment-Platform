@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { fromBaseUnits, getAsset, toBaseUnits, UnknownAssetError } from "../lib/assets";
 import {
   formatAmount,
+  formatBaseUnitsForAsset,
   getAsset,
   sumAmounts,
   toBaseUnits,
@@ -71,5 +72,20 @@ describe("exact money arithmetic", () => {
     expect(formatAmount(20_000_000n, 7)).toBe("2");
     expect(formatAmount(0n, 7)).toBe("0");
     expect(formatAmount(123_456_789n, 7)).toBe("12.3456789");
+  });
+});
+
+describe("formatBaseUnitsForAsset", () => {
+  it("renders base units in whole units for the event's asset", () => {
+    expect(formatBaseUnitsForAsset("20000000", "USDC")).toBe("2");
+    expect(formatBaseUnitsForAsset(3_000_000n, "XLM")).toBe("0.3");
+    expect(formatBaseUnitsForAsset("123456789", "USDC")).toBe("12.3456789");
+  });
+
+  it("returns the raw value when the asset is unknown or missing", () => {
+    // Falling back to 7 decimals for an unregistered symbol would be a guess; a
+    // raw figure is honest and still inspectable.
+    expect(formatBaseUnitsForAsset("20000000", "DOGE")).toBe("20000000");
+    expect(formatBaseUnitsForAsset("20000000", null)).toBe("20000000");
   });
 });

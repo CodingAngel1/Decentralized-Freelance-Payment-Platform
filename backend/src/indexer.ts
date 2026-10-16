@@ -13,10 +13,8 @@
  *
  * Events handled (see docs/EVENTS.md):
  *   escrow     — created, funded, milestones_updated, milestone_released,
- *                dispute_opened, resolved, refunded
- *
- * `milestones_updated` carries only `count`/`total_amount`, so per-milestone
- * detail is written by the API (see `handleMilestonesUpdated`).
+ *                dispute_opened, resolved, refunded,
+ *                dispute_contract_updated (recognized; no job state to update)
  *   dispute    — raised, approved, dispute_resolved
  *   reputation — rated
  *
@@ -36,6 +34,10 @@
  *     `REFUNDED` and `RESOLVED` are the two terminal dispute states.
  *
  * Contributor Notes:
+ * - Every recognised event is also stored verbatim in ChainEvent (issue #72) so
+ *   a per-user history and an escrow receipt can link to the transaction that
+ *   emitted it; the state handlers below are unaffected by that write, which is
+ *   best-effort.
  * - The cursor (last scanned ledger) is persisted in IndexerCursor, so the
  *   indexer resumes after a restart and does not reprocess applied ledgers.
  * - Unknown events are ignored; a failed event is logged and recorded in
@@ -48,13 +50,12 @@
 
 import type { PrismaClient } from "@prisma/client";
 import { SorobanRpc } from "@stellar/stellar-sdk";
-import type { DisputeStatus, JobStatus } from "@prisma/client";
+import type { DisputeStatus, JobStatus, NotificationType } from "@prisma/client";
 import { config } from "./config";
 import { prisma } from "./db";
-import { ASSETS, fromBaseUnits } from "./lib/assets";
+import { checkConfiguredContractIds, type ContractIdName } from "./lib/contractFreshness";
 import {
   KNOWN_EVENTS,
-  decodeEventData,
   decodeEventFields,
   decodeEventName,
   eventEscrowId,
@@ -62,7 +63,7 @@ import {
 } from "./lib/events";
 
 const CURSOR_ID = "main";
-const EVENT_PAGE_LIMIT = 100;
+export const EVENT_PAGE_LIMIT = 100;
 
 /** Longest error message persisted to IndexerDeadLetter.error. */
 const MAX_ERROR_LENGTH = 500;
@@ -88,14 +89,18 @@ const CONTRACT_IDS = [
   config.REPUTATION_CONTRACT_ID,
 ].filter(Boolean);
 
+/** The contracts the indexer is expected to follow, for a partial-config check. */
+const INDEXED_CONTRACTS: ContractIdName[] = ["escrow", "dispute", "reputation"];
+
 const rpcServer = new SorobanRpc.Server(config.SOROBAN_RPC_URL, { allowHttp: false });
 
 /** Minimal surface of `SorobanRpc.Server` the indexer needs (for testing). */
 export interface SorobanEventSource {
   getEvents(request: {
-    startLedger: number;
+    startLedger?: number;
     filters: SorobanRpc.Api.EventFilter[];
     limit?: number;
+    cursor?: string;
   }): Promise<{ events: ContractEventLike[]; latestLedger: number }>;
   /**
    * Chain tip, used to keep `startLedger` inside the RPC's retention window.
@@ -127,10 +132,28 @@ export interface IndexerStore {
 }
 
 export function startIndexer() {
+  // Contract ids change on every deploy, so compare the configured ones with
+  // the last deploy record before doing anything else. Stale-but-non-empty ids
+  // used to leave the indexer polling the superseded contracts with no warning
+  // at all; this turns that silent misconfiguration into a loud log line.
+  checkConfiguredContractIds({
+    escrow: config.ESCROW_CONTRACT_ID,
+    dispute: config.DISPUTE_CONTRACT_ID,
+    reputation: config.REPUTATION_CONTRACT_ID,
+  });
+
   if (CONTRACT_IDS.length === 0) {
     console.warn("[indexer] No contract IDs configured — skipping.");
     return;
   }
+
+  if (CONTRACT_IDS.length < INDEXED_CONTRACTS.length) {
+    console.warn(
+      `[indexer] Only ${CONTRACT_IDS.length}/${INDEXED_CONTRACTS.length} contract IDs ` +
+        "configured — events from the unconfigured contract(s) will not be indexed.",
+    );
+  }
+
   console.log("[indexer] Starting, polling every", config.INDEXER_POLL_INTERVAL_MS, "ms");
   void poll();
   setInterval(() => void poll(), config.INDEXER_POLL_INTERVAL_MS);
@@ -229,31 +252,60 @@ export async function processContractEvents(
     contractIds: [contractId],
   }));
 
-  const startLedger = await resolveStartLedger(source, lastLedger);
+  let currentStartLedger: number | undefined = await resolveStartLedger(source, lastLedger);
+  let currentCursor: string | undefined = undefined;
+  let maxLatestLedger = lastLedger;
 
-  const res = await source.getEvents({
-    startLedger,
-    filters,
-    limit: EVENT_PAGE_LIMIT,
-  });
+  while (true) {
+    const res = await source.getEvents({
+      ...(currentCursor ? { cursor: currentCursor } : { startLedger: currentStartLedger }),
+      filters,
+      limit: EVENT_PAGE_LIMIT,
+    });
 
-  for (const event of res.events) {
-    try {
-      await dispatch(event);
-    } catch (err) {
-      // One bad event must not block the rest of the batch.
-      console.error(`[indexer] failed to process event ${event.id ?? "?"}`, err);
-      // Recording the failure must never take the poller down with it.
+    maxLatestLedger = Math.max(maxLatestLedger, res.latestLedger);
+
+    for (const event of res.events) {
       try {
-        await onError(event, err);
-      } catch (storeErr) {
-        console.error("[indexer] could not record the failed event", storeErr);
+        await dispatch(event);
+      } catch (err) {
+        // One bad event must not block the rest of the batch.
+        console.error(`[indexer] failed to process event ${event.id ?? "?"}`, err);
+        // Recording the failure must never take the poller down with it.
+        try {
+          await onError(event, err);
+        } catch (storeErr) {
+          console.error("[indexer] could not record the failed event", storeErr);
+        }
       }
+    }
+
+    if (res.events.length < EVENT_PAGE_LIMIT) {
+      break;
+    }
+
+    const lastEvent = res.events[res.events.length - 1];
+    if (lastEvent?.id) {
+      if (lastEvent.id === currentCursor) {
+        // Cursor did not advance, break to avoid an infinite loop
+        break;
+      }
+      currentCursor = lastEvent.id;
+      currentStartLedger = undefined;
+    } else if (lastEvent?.ledger) {
+      const nextLedger = lastEvent.ledger + 1;
+      if (currentStartLedger !== undefined && nextLedger <= currentStartLedger) {
+        break;
+      }
+      currentStartLedger = nextLedger;
+      currentCursor = undefined;
+    } else {
+      break;
     }
   }
 
-  // Advance only after every event in the batch has been attempted.
-  const next = Math.max(lastLedger, res.latestLedger);
+  // Advance only after every event across all pages has been attempted.
+  const next = Math.max(lastLedger, maxLatestLedger);
   await cursor.set(next);
   return next;
 }
@@ -345,6 +397,20 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
   if (!name || !KNOWN_EVENTS.has(name)) return; // unknown events are ignored
 
   const data = decodeEventFields(event, EVENT_TOPIC_FIELDS[name] ?? []);
+
+  // Record the event itself (issue #72). Best-effort: history is derived data,
+  // and a failure to store it must not stop the state mirror below from being
+  // updated — a dropped history row is recoverable by replaying the event,
+  // whereas a skipped state change is what the dead-letter table exists for.
+  try {
+    const row = buildChainEvent(event, name, data);
+    if (row) {
+      await prisma.chainEvent.upsert({ where: { id: row.id }, create: row, update: {} });
+    }
+  } catch (err) {
+    console.error(`[indexer] could not record event ${event.id ?? "?"} in the history`, err);
+  }
+
   switch (name) {
     case "created":
       await handleCreated(escrowId, store);
@@ -380,7 +446,10 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
       await handleRated(escrowId, data, store);
       break;
     default:
-      // `approved` does not change indexed job state.
+      // milestones_updated / approved / dispute_contract_updated do not
+      // change indexed job state — dispute_contract_updated is an admin
+      // contract-config rotation (audited on-chain via getEvents), and no
+      // Job row is affected by it.
       break;
   }
 }
@@ -401,14 +470,50 @@ function asAddress(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-async function handleCreated(escrowId: bigint | null, store: IndexerStore): Promise<void> {
+async function notifyParticipants(
+  escrowId: bigint,
+  type: NotificationType,
+  title: string,
+  message: string,
+  jobStore?: { findUnique(args: { where: { escrowId: bigint } }): Promise<unknown> },
+): Promise<void> {
+  try {
+    const finder = jobStore ?? prisma.job;
+    const rawJob = await finder.findUnique({
+      where: { escrowId },
+    });
+    if (!rawJob || typeof rawJob !== "object") return;
+    const job = rawJob as { id: string; clientId?: string; freelancerId?: string | null };
+    const recipients = [job.clientId, job.freelancerId].filter((id): id is string => Boolean(id));
+    if (recipients.length === 0) return;
+    await Promise.all(
+      recipients.map((userId) =>
+        prisma.notification?.create({
+          data: {
+            userId,
+            jobId: job.id,
+            type,
+            title,
+            message,
+          },
+        }),
+      ),
+    );
+  } catch {
+    // Gracefully ignore notification failure if database is unavailable or mocked
+  }
+}
+
+async function handleCreated(data: Record<string, unknown>): Promise<void> {
+  const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
   await store.job.updateMany({ where: { escrowId }, data: { status: "CREATED" } });
 }
 
 async function handleFunded(escrowId: bigint | null, store: IndexerStore): Promise<void> {
   if (escrowId === null) return;
-  await store.job.updateMany({ where: { escrowId }, data: { status: "ACTIVE" } });
+  await prisma.job.updateMany({ where: { escrowId }, data: { status: "ACTIVE" } });
+  await notifyParticipants(escrowId, "FUNDED", "Escrow Funded", "Escrow has been funded.");
 }
 
 /**
@@ -467,6 +572,13 @@ async function handleMilestoneReleased(
   if (allReleased) {
     await store.job.update({ where: { id: job.id }, data: { status: "COMPLETED" } });
   }
+
+  await notifyParticipants(
+    escrowId,
+    "RELEASED",
+    "Milestone Released",
+    `Milestone ${index + 1} for job "${job.title}" has been released.`,
+  );
 }
 
 async function handleDisputeOpened(
@@ -533,6 +645,13 @@ export async function handleDisputeOpened(
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
   await db.job.updateMany({ where: { escrowId }, data: { status: "DISPUTED" } });
+  await notifyParticipants(
+    escrowId,
+    "DISPUTED",
+    "Dispute Opened",
+    "A dispute has been opened for the job.",
+    db.job,
+  );
 }
 
 /**
@@ -563,6 +682,7 @@ async function handleResolved(
     where: { job: { escrowId } },
     data: { status: "RELEASED", releasedAt: resolvedAt },
   });
+  await notifyParticipants(escrowId, "RESOLVED", "Dispute Resolved", "The dispute has been resolved.");
 }
 
 async function handleRefunded(escrowId: bigint | null, store: IndexerStore): Promise<void> {

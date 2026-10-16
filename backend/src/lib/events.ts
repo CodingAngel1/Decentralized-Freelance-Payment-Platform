@@ -37,6 +37,7 @@ export const KNOWN_EVENTS = new Set([
   "dispute_opened",
   "resolved",
   "refunded",
+  "dispute_contract_updated",
   "raised",
   "approved",
   "dispute_resolved",
@@ -48,6 +49,14 @@ export interface ContractEventLike {
   ledger: number;
   topic: xdr.ScVal[];
   value: xdr.ScVal;
+  /**
+   * Hash of the transaction that emitted the event, as RPC reports it. Present
+   * on live events and used for the explorer link in a history view (issue #72);
+   * optional so hand-built test fixtures can omit it.
+   */
+  txHash?: string;
+  /** Ledger close time (ISO 8601) as RPC reports it. */
+  ledgerClosedAt?: string;
 }
 
 /** The event name from `topic[0]`, or `null` if it is missing/malformed. */
