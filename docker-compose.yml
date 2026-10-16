@@ -65,6 +65,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        # Defaults to empty string so requests are relative (/api/...) and routed
+        # through the frontend container's nginx reverse proxy to http://backend:3000
+        VITE_API_URL: ${VITE_API_URL:-}
         VITE_NETWORK: ${VITE_NETWORK:-testnet}
         VITE_ESCROW_CONTRACT_ID: ${VITE_ESCROW_CONTRACT_ID:-}
         VITE_DISPUTE_CONTRACT_ID: ${VITE_DISPUTE_CONTRACT_ID:-}
