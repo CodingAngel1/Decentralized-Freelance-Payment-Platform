@@ -32,12 +32,14 @@ import { Link, useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
+import FiatEstimate from "../components/FiatEstimate";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
 import { assetForContractId, fromBaseUnits } from "../lib/assets";
 import { authenticate, createDispute, fetchJobs, linkDisputeId, submitRating as recordRating } from "../lib/api";
 import { formatDeadline, formatRemaining, secondsUntil } from "../lib/time";
+import { parseEscrowId } from "../lib/escrowId";
 
 const POLL_MS = 5_000;
 
@@ -102,7 +104,7 @@ export default function JobDetail() {
   const [reason, setReason] = useState("");
   const [disputeNote, setDisputeNote] = useState<string | null>(null);
 
-  const escrowId = id ? BigInt(id) : null;
+  const escrowId = id ? parseEscrowId(id) : null;
 
   const refresh = useCallback(async () => {
     if (escrowId === null) return;
@@ -148,7 +150,13 @@ export default function JobDetail() {
   if (escrowId === null) {
     return (
       <Layout>
-        <p>Invalid job id.</p>
+        <p role="alert">
+          Invalid job id{id ? ` "${id}"` : ""}.{" "}
+          Escrow ids must be non-negative integers.
+        </p>
+        <p>
+          <Link to="/">← Back to Dashboard</Link>
+        </p>
       </Layout>
     );
   }
@@ -295,14 +303,19 @@ export default function JobDetail() {
             <AddressField address={escrow.freelancer} label="Freelancer address" qr />
             {isFreelancer && " (you)"}
             <br />
-            Total: <strong>{fromBaseUnits(escrow.total_amount, decimals)}</strong> {symbol}
+            Total: <strong>{fromBaseUnits(escrow.total_amount, decimals)}</strong> {symbol}{" "}
+            <FiatEstimate
+              amount={fromBaseUnits(escrow.total_amount, decimals)}
+              asset={symbol}
+            />
           </p>
 
           <h2>Milestones</h2>
           <ol>
             {escrow.milestones.map((m, i) => (
               <li key={i}>
-                {fromBaseUnits(m.amount, decimals)} {symbol} —{" "}
+                {fromBaseUnits(m.amount, decimals)} {symbol}{" "}
+                <FiatEstimate amount={fromBaseUnits(m.amount, decimals)} asset={symbol} /> —{" "}
                 {m.released
                   ? "released"
                   : `${fromBaseUnits(m.released_amount, decimals)} released, ${fromBaseUnits(

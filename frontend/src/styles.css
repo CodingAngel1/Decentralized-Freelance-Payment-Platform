@@ -233,3 +233,84 @@ fieldset {
 .qr-code {
   display: block;
 }
+
+/* --- Saved jobs --------------------------------------------------------- */
+
+/* The bookmark toggle sits at the end of a job row, so it stays small. */
+.btn-save,
+.btn-saved {
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.btn-saved {
+  background: #e6f0fd;
+  border-color: #bcd4f6;
+  color: #1d4ed8;
+}
+
+/* --- Skill tags --------------------------------------------------------- */
+
+.tag {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #eef2f6;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.tag-group {
+  margin-bottom: 0.5rem;
+}
+
+/* Inline so a category's tags wrap instead of stacking one per line. */
+.tag-option {
+  display: inline-block;
+  margin-right: 0.75rem;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+/* --- Activity summary --------------------------------------------------- */
+
+/* Three counters side by side; wraps to one per line on a narrow screen. */
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 8rem;
+}
+
+.stat-value {
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* One released/locked total per asset, kept on a single line each. */
+.amount {
+  display: inline-block;
+  margin-right: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Fiat estimates (issue #76) ----------------------------------------- */
+
+/* Sits beside an amount without competing with it: smaller, muted, never bold. */
+.fiat {
+  font-size: 0.85em;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}

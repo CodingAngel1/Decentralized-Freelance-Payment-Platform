@@ -22,7 +22,13 @@ const h = vi.hoisted(() => ({
     disconnect: vi.fn(),
   },
   fetchJobs: vi.fn(),
-  fetchReminders: vi.fn(),
+  // The bookmark list is authenticated and loaded when a wallet connects (#71).
+  authenticate: vi.fn(async () => "jwt-1"),
+  fetchSavedJobs: vi.fn(async () => [] as unknown[]),
+  saveJob: vi.fn(async () => undefined),
+  unsaveJob: vi.fn(async () => undefined),
+  // Fiat estimates read an external price feed (#76); this is what it returned.
+  rates: {} as Record<string, number>,
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -32,13 +38,22 @@ vi.mock("react-router-dom", () => ({
   ),
 }));
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
+// Stub the price lookup, keep the real maths: no test may touch the feed.
+vi.mock("../lib/prices", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/prices")>()),
+  getFiatRates: async () => h.rates,
+}));
 vi.mock("../lib/api", () => ({
   fetchJobs: h.fetchJobs,
-  fetchReminders: h.fetchReminders,
+  authenticate: h.authenticate,
+  fetchSavedJobs: h.fetchSavedJobs,
+  saveJob: h.saveJob,
+  unsaveJob: h.unsaveJob,
 }));
 
 import Dashboard from "./Dashboard";
-import type { JobApi, ReminderApi } from "../lib/api";
+import type { JobApi } from "../lib/api";
+import { SKILL_TAGS } from "../lib/tags";
 
 const CLIENT = "GBPLJHDI6RPLS4EEJJTM7EVEV3UNTXLFAACWA63QSTHGLWH5RO3LQ75B";
 
@@ -80,12 +95,15 @@ beforeEach(() => {
   h.navigate.mockClear();
   h.fetchJobs.mockReset();
   h.fetchJobs.mockResolvedValue([]);
-  h.fetchReminders.mockReset();
-  h.fetchReminders.mockResolvedValue([]);
+  h.fetchSavedJobs.mockReset();
+  h.fetchSavedJobs.mockResolvedValue([]);
+  h.saveJob.mockClear();
+  h.unsaveJob.mockClear();
   h.wallet.publicKey = null;
   h.wallet.connecting = false;
   h.wallet.error = null;
   h.wallet.connect.mockClear();
+  h.rates = {};
 });
 
 afterEach(() => cleanup());
@@ -207,6 +225,127 @@ describe("Dashboard job list", () => {
     expect(screen.getByText("Not funded on-chain yet")).toBeTruthy();
   });
 
+  it("shows each job's skill tags by their display label", async () => {
+    h.fetchJobs.mockResolvedValue([job({ tags: ["web-development", "devops"] })]);
+
+    render(<Dashboard />);
+
+    await screen.findByText("Landing page redesign");
+    // Labels, not the stored slugs. Scoped to the row badge: the same label is
+    // also an option in the skill filter.
+    expect(screen.getByText("Web development", { selector: "span.tag" })).toBeTruthy();
+    expect(screen.getByText("DevOps & infrastructure", { selector: "span.tag" })).toBeTruthy();
+  });
+
+  it("tolerates a job with no tags at all", async () => {
+    h.fetchJobs.mockResolvedValue([job({ tags: undefined })]);
+
+    render(<Dashboard />);
+
+    expect(await screen.findByText("Landing page redesign")).toBeTruthy();
+  });
+
+  it("shows an approximate fiat figure beside a job's total (#76)", async () => {
+    h.rates = { XLM: 2 };
+    h.fetchJobs.mockResolvedValue([job({ totalAmountUsdc: 1.5, asset: "XLM" })]);
+
+    render(<Dashboard />);
+
+    await screen.findByText("Landing page redesign");
+    expect(await screen.findByText("$3.00")).toBeTruthy();
+  });
+
+  it("leaves the total alone when no rate is available (#76)", async () => {
+    h.fetchJobs.mockResolvedValue([job({ totalAmountUsdc: 1.5, asset: "XLM" })]);
+
+    render(<Dashboard />);
+
+    await screen.findByText("Landing page redesign");
+    expect(screen.queryByText(/≈/)).toBeNull();
+  });
+
+  it("bookmarks a job and reflects it on the button", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(h.saveJob).toHaveBeenCalledWith("job-1", "jwt-1"));
+    // The same row now offers to unsave it.
+    expect(await screen.findByRole("button", { name: "Saved" })).toBeTruthy();
+    expect(h.unsaveJob).not.toHaveBeenCalled();
+  });
+
+  it("unbookmarks a job that is already saved", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    h.fetchSavedJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    const saved = await screen.findByRole("button", { name: "Saved" });
+    fireEvent.click(saved);
+
+    await waitFor(() => expect(h.unsaveJob).toHaveBeenCalledWith("job-1", "jwt-1"));
+    expect(await screen.findByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
+  it("lists only the saved jobs when Saved only is on", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    h.fetchSavedJobs.mockResolvedValue([
+      job({ id: "job-9", title: "Bookmarked job", escrowId: 9 }),
+    ]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.click(screen.getByLabelText(/Saved only/));
+
+    // The bookmark list replaces the paginated one rather than merging with it.
+    expect(await screen.findByText("Bookmarked job")).toBeTruthy();
+    expect(screen.queryByText("Landing page redesign")).toBeNull();
+  });
+
+  it("shows an empty state for a wallet with no bookmarks", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.click(screen.getByLabelText(/Saved only/));
+
+    expect(await screen.findByText("No saved jobs yet.")).toBeTruthy();
+  });
+
+  it("reports a failed bookmark action instead of faking it", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    h.saveJob.mockRejectedValue(new Error("Could not save the job (HTTP 500)"));
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Could not save the job (HTTP 500)",
+    );
+    // The toggle did not half-apply.
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
+  it("offers no bookmark control to a visitor with no wallet", async () => {
+    h.fetchJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    expect(screen.queryByRole("button", { name: /Save/ })).toBeNull();
+    expect(screen.queryByLabelText(/Saved only/)).toBeNull();
+    // Nothing authenticated is fetched until a wallet exists.
+    expect(h.fetchSavedJobs).not.toHaveBeenCalled();
+  });
+
   it("shows an empty state rather than a blank list", async () => {
     render(<Dashboard />);
 
@@ -237,6 +376,35 @@ describe("Dashboard job list", () => {
 
     // Back to page 1: page 3 of the previous filter is meaningless under a new one.
     await waitFor(() => expect(lastQuery()).toEqual({ status: "COMPLETED", page: 1, limit: 10 }));
+  });
+
+  it("filters by skill tag and re-fetches from page 1", async () => {
+    h.fetchJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.change(screen.getByLabelText(/Filter by skill/), {
+      target: { value: "smart-contracts" },
+    });
+
+    // The tag is applied by the API, so pagination stays correct.
+    await waitFor(() =>
+      expect(lastQuery()).toEqual({
+        status: undefined,
+        tag: "smart-contracts",
+        page: 1,
+        limit: 10,
+      }),
+    );
+  });
+
+  it("offers every curated skill in the filter", async () => {
+    render(<Dashboard />);
+    await screen.findByText("No jobs found.");
+
+    const select = screen.getByLabelText(/Filter by skill/) as HTMLSelectElement;
+    // "All skills" plus one option per curated tag.
+    expect(select.querySelectorAll("option")).toHaveLength(SKILL_TAGS.length + 1);
   });
 
   it("appends the next page when asked for more", async () => {

@@ -4,15 +4,12 @@ import {
   buildJobsQuery,
   createDispute,
   createJob,
-  fetchRatingsReceived,
-  fetchReceipt,
-  fetchReminders,
-  fetchTransactions,
-  fetchUserJobs,
+  fetchSavedJobs,
   linkDisputeId,
+  saveJob,
   submitRating,
+  unsaveJob,
 } from "./api";
-import type { JobApi } from "./api";
 
 describe("buildJobsQuery", () => {
   it("omits empty filters", () => {
@@ -29,6 +26,7 @@ describe("buildJobsQuery", () => {
       status: "COMPLETED",
       client: "GABCD",
       freelancer: "GEFGH",
+      tag: "web-development",
       page: 2,
       limit: 10,
     });
@@ -36,9 +34,15 @@ describe("buildJobsQuery", () => {
     expect(params.get("status")).toBe("COMPLETED");
     expect(params.get("client")).toBe("GABCD");
     expect(params.get("freelancer")).toBe("GEFGH");
+    expect(params.get("tag")).toBe("web-development");
     expect(params.get("page")).toBe("2");
     expect(params.get("limit")).toBe("10");
     expect(qs.startsWith("?")).toBe(true);
+  });
+
+  it("omits the skill-tag filter when it is empty", () => {
+    expect(buildJobsQuery({ tag: "" })).toBe("");
+    expect(buildJobsQuery({ tag: "devops" })).toBe("?tag=devops");
   });
 });
 
@@ -273,6 +277,57 @@ describe("authenticate", () => {
       signature: "sig-base64",
       nonce: "nonce-1",
     });
+  });
+});
+
+describe("bookmarks", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("GETs the saved jobs with a bearer token", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify([{ id: "job-1", title: "Bookmarked" }]), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const jobs = await fetchSavedJobs("jwt-1");
+
+    expect(jobs[0].id).toBe("job-1");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/jobs/saved");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-1");
+  });
+
+  it("POSTs a bookmark", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await saveJob("job-1", "jwt-1");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/jobs/job-1/save");
+    expect(init.method).toBe("POST");
+  });
+
+  it("DELETEs a bookmark", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await unsaveJob("job-1", "jwt-1");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/jobs/job-1/save");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("throws with the status when a bookmark is refused", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 401 })),
+    );
+
+    await expect(saveJob("job-1", "stale")).rejects.toThrow(/HTTP 401/);
   });
 });
 

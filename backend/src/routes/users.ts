@@ -18,7 +18,7 @@
  * restarts and work across instances.
  */
 
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { SignJWT } from "jose";
 import { prisma } from "../db";
@@ -91,105 +91,123 @@ usersRouter.post("/auth", validate(authSchema), async (req, res, next) => {
   }
 });
 
-// GET /api/users/:address/transactions
-//
-// The consolidated history a single action-at-a-time UI never had (issue #72).
-// A user's history is the indexed events on the escrows of the jobs they took
-// part in, newest ledger first. The event's `amount` is returned in whole units
-// of the job's asset (like `Job.totalAmountUsdc`) rather than raw base units, and
-// `txHash` is what the client turns into an explorer link.
-usersRouter.get("/:address/transactions", async (req, res, next) => {
+// GET /api/users/freelancers (and GET /api/users) — public freelancer directory (#68)
+const getFreelancersHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
   try {
-    const address = req.params.address;
-    const jobs = await prisma.job.findMany({
-      where: {
-        OR: [
-          { client: { stellarAddress: address } },
-          { freelancer: { stellarAddress: address } },
-        ],
-      },
-      select: { escrowId: true, asset: true },
-    });
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const sortBy = (
+      typeof req.query.sortBy === "string" ? req.query.sortBy : "reputation"
+    ).toLowerCase();
+    const sortOrder =
+      (typeof req.query.sortOrder === "string" ? req.query.sortOrder : "desc").toLowerCase() ===
+      "asc"
+        ? "asc"
+        : "desc";
+    const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10) || 20));
 
-    const assetByEscrow = new Map<string, string>();
-    for (const job of jobs) {
-      if (job.escrowId !== null) assetByEscrow.set(job.escrowId.toString(), job.asset);
-    }
-    const escrowIds = [...assetByEscrow.keys()].map((id) => BigInt(id));
-    if (escrowIds.length === 0) {
-      res.json([]);
-      return;
-    }
+    const where = search
+      ? {
+          OR: [
+            { stellarAddress: { contains: search, mode: "insensitive" as const } },
+            { displayName: { contains: search, mode: "insensitive" as const } },
+            { bio: { contains: search, mode: "insensitive" as const } },
+          ],
+        }
+      : {};
 
-    const events = await prisma.chainEvent.findMany({
-      where: { escrowId: { in: escrowIds } },
-      orderBy: { ledger: "desc" },
-      take: 200,
-    });
-
-    res.json(
-      events.map((event) => {
-        const symbol = assetByEscrow.get(event.escrowId.toString()) ?? null;
-        return {
-          id: event.id,
-          escrowId: event.escrowId.toString(),
-          action: event.action,
-          amount: event.amount === null ? null : formatBaseUnitsForAsset(event.amount.toString(), symbol),
-          asset: symbol,
-          txHash: event.txHash,
-          ledger: event.ledger,
-          createdAt: event.createdAt,
-        };
-      }),
-    );
-  } catch (err) {
-    next(err);
-  }
-});
-
-// GET /api/users/:address/reminders
-//
-// The in-app half of issue #74: the milestones on the address's open jobs whose
-// deadline has passed or is inside the horizon (`?withinHours=`, default from
-// `REMINDER_HORIZON_HOURS`). Derived on read rather than stored, so a reminder
-// cannot go stale and a released milestone stops reminding immediately.
-//
-// Email delivery is not implemented — `User` has no email address — so this is
-// the only channel; `/api/users/:address/reminders` is where a mailer would
-// read from (see lib/reminders.ts).
-usersRouter.get("/:address/reminders", async (req, res, next) => {
-  try {
-    const address = req.params.address;
-    const withinHours = parseHorizonHours(
-      req.query.withinHours,
-      config.REMINDER_HORIZON_HOURS,
-    );
-
-    // Terminal states are excluded: a completed, disputed or refunded escrow has
-    // no deadline left to act on.
-    const jobs = await prisma.job.findMany({
-      where: {
-        status: { in: ["CREATED", "FUNDED", "ACTIVE"] },
-        OR: [
-          { client: { stellarAddress: address } },
-          { freelancer: { stellarAddress: address } },
-        ],
-      },
+    const users = await prisma.user.findMany({
+      where,
       include: {
-        milestones: {
-          where: { status: "PENDING", deadline: { not: null } },
-          orderBy: { index: "asc" },
+        ratingsReceived: {
+          select: { score: true },
         },
-        client: { select: { stellarAddress: true } },
-        freelancer: { select: { stellarAddress: true } },
+        jobsAsFreelancer: {
+          select: { id: true, status: true },
+        },
       },
+      orderBy: { createdAt: "desc" },
     });
 
-    res.json(buildMilestoneReminders(jobs, address, new Date(), withinHours));
+    const formatted = users.map((user) => {
+      const totalRatings = user.ratingsReceived.length;
+      const sumScore = user.ratingsReceived.reduce((acc, r) => acc + r.score, 0);
+      const averageScore = totalRatings > 0 ? Number((sumScore / totalRatings).toFixed(2)) : 0;
+      const completedJobsCount = user.jobsAsFreelancer.filter(
+        (j) => j.status === "COMPLETED",
+      ).length;
+      const totalJobsCount = user.jobsAsFreelancer.length;
+
+      return {
+        id: user.id,
+        stellarAddress: user.stellarAddress,
+        displayName: user.displayName,
+        bio: user.bio,
+        createdAt: user.createdAt,
+        averageScore,
+        totalRatings,
+        completedJobsCount,
+        totalJobsCount,
+      };
+    });
+
+    formatted.sort((a, b) => {
+      if (sortBy === "jobs") {
+        if (a.completedJobsCount !== b.completedJobsCount) {
+          return sortOrder === "asc"
+            ? a.completedJobsCount - b.completedJobsCount
+            : b.completedJobsCount - a.completedJobsCount;
+        }
+        return sortOrder === "asc"
+          ? a.totalRatings - b.totalRatings
+          : b.totalRatings - a.totalRatings;
+      }
+
+      if (sortBy === "recent") {
+        const timeA = new Date(a.createdAt).getTime();
+        const timeB = new Date(b.createdAt).getTime();
+        return sortOrder === "asc" ? timeA - timeB : timeB - timeA;
+      }
+
+      // Default: "reputation"
+      if (a.averageScore !== b.averageScore) {
+        return sortOrder === "asc"
+          ? a.averageScore - b.averageScore
+          : b.averageScore - a.averageScore;
+      }
+      if (a.totalRatings !== b.totalRatings) {
+        return sortOrder === "asc"
+          ? a.totalRatings - b.totalRatings
+          : b.totalRatings - a.totalRatings;
+      }
+      return sortOrder === "asc"
+        ? a.completedJobsCount - b.completedJobsCount
+        : b.completedJobsCount - a.completedJobsCount;
+    });
+
+    const total = formatted.length;
+    const totalPages = Math.ceil(total / limit) || 1;
+    const offset = (page - 1) * limit;
+    const paged = formatted.slice(offset, offset + limit);
+
+    res.json({
+      freelancers: paged,
+      total,
+      page,
+      limit,
+      totalPages,
+    });
   } catch (err) {
     next(err);
   }
-});
+};
+
+usersRouter.get("/freelancers", getFreelancersHandler);
+usersRouter.get("/", getFreelancersHandler);
 
 // GET /api/users/:address
 usersRouter.get("/:address", async (req, res, next) => {
