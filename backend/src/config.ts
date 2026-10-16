@@ -14,10 +14,9 @@ const schema = z.object({
   USDC_CONTRACT_ID: z.string().default(""),
   XLM_CONTRACT_ID: z.string().default(""),
   INDEXER_POLL_INTERVAL_MS: z.coerce.number().default(5000),
-  // Optional path to the deploy record used for the startup freshness check.
-  // Empty (the default) makes the indexer search the usual repo/image paths
-  // (`deployments/testnet.json`); see src/lib/contractFreshness.ts.
-  DEPLOYMENTS_FILE: z.string().default(""),
+  // How far ahead a milestone deadline counts as "due soon" for the in-app
+  // reminders (issue #74). A per-request `?withinHours=` overrides it.
+  REMINDER_HORIZON_HOURS: z.coerce.number().default(48),
   // Comma-separated Stellar addresses that may resolve disputes through the
   // API. Empty means "nobody", not "everybody": the route fails closed.
   ARBITRATOR_ADDRESSES: z.string().default(""),
@@ -25,6 +24,10 @@ const schema = z.object({
   // frontend). Empty means "no restriction" in development, but production
   // warns loudly because that allows every origin.
   CORS_ORIGIN: z.string().default(""),
+  // Reverse proxy hop count (e.g. 1 behind Render, Heroku, or Nginx).
+  // Configures Express 'trust proxy' so rate limiting keys on the real client IP.
+  // 0 disables proxy trust (default).
+  TRUST_PROXY: z.coerce.number().int().min(0).default(0),
 });
 
 const parsed = schema.safeParse(process.env);

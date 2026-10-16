@@ -93,3 +93,8 @@ services:
 
       - key: INDEXER_POLL_INTERVAL_MS
         value: "5000"
+
+      # Render web services sit behind a single reverse proxy hop.
+      - key: TRUST_PROXY
+        value: "1"
+
