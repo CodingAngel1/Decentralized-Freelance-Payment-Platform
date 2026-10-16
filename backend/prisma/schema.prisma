@@ -24,6 +24,7 @@ model User {
   jobsAsFreelancer Job[]      @relation("FreelancerJobs")
   ratingsGiven     Rating[]   @relation("RatingsGiven")
   ratingsReceived  Rating[]   @relation("RatingsReceived")
+  messagesSent     Message[]  @relation("MessagesSent")
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ model Job {
   milestones      Milestone[]
   disputes        Dispute[]
   ratings         Rating[]
+  messages        Message[]
 
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -162,6 +164,32 @@ model Rating {
   @@index([raterId])
 
   @@unique([raterId, jobId])
+}
+
+// ---------------------------------------------------------------------------
+// Messages — the job-scoped conversation between its two participants
+//
+// Scoped to a job and readable only by that job's client and freelancer: the
+// routes resolve the caller against those two addresses before touching a row.
+// A message has exactly one recipient (the other party), so one `readAt`
+// tracks whether the recipient has seen it and no join table is needed
+// (issue #64).
+// ---------------------------------------------------------------------------
+model Message {
+  id        String   @id @default(cuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id])
+  senderId  String
+  sender    User     @relation("MessagesSent", fields: [senderId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+  /// Set when the recipient reads the message; null means unread for them.
+  readAt    DateTime?
+
+  // The conversation reads `WHERE jobId = ? ORDER BY createdAt`; the unread
+  // count reads `WHERE jobId = ? AND readAt IS NULL`.
+  @@index([jobId, createdAt])
+  @@index([jobId, readAt])
 }
 
 // ---------------------------------------------------------------------------

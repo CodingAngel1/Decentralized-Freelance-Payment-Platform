@@ -43,6 +43,7 @@ import {
   syncSchema as disputeSyncSchema,
 } from "./routes/disputes";
 import { submitSchema } from "./routes/reputation";
+import { sendMessageSchema } from "./routes/messages";
 
 // Patches `z` so schemas can be annotated/registered. Called once, before any
 // schema below is registered.
@@ -139,6 +140,26 @@ const rating = registry.register(
     score: z.number().int().min(1).max(5),
     comment: z.string().nullable(),
     createdAt: z.string().datetime(),
+  }),
+);
+
+const message = registry.register(
+  "Message",
+  z.object({
+    id: z.string(),
+    jobId: z.string(),
+    senderId: z.string(),
+    body: z.string(),
+    createdAt: z.string().datetime(),
+    readAt: z.string().datetime().nullable().describe("When the recipient read it; null = unread"),
+  }),
+);
+
+/** A message as the conversation view returns it: with its sender's address. */
+const conversationMessage = registry.register(
+  "ConversationMessage",
+  message.extend({
+    sender: z.object({ stellarAddress: z.string(), displayName: z.string().nullable() }),
   }),
 );
 
@@ -501,6 +522,77 @@ registry.registerPath({
 });
 
 // ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+registry.registerPath({
+  method: "get",
+  path: "/api/messages/unread",
+  tags: ["Messages"],
+  summary: "Unread message counts for the authenticated user",
+  security: auth,
+  responses: {
+    200: json(
+      z.object({
+        total: z.number().int(),
+        byJob: z.array(z.object({ jobId: z.string(), count: z.number().int() })),
+      }),
+      "Unread counts, total and per job",
+    ),
+    401: errors[401],
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/messages/{jobId}",
+  tags: ["Messages"],
+  summary: "Read a job's conversation (participants only)",
+  security: auth,
+  request: { params: z.object({ jobId: z.string() }) },
+  responses: {
+    200: json(z.array(conversationMessage), "The conversation, oldest first"),
+    401: errors[401],
+    403: errors[403],
+    404: errors[404],
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/messages/{jobId}",
+  tags: ["Messages"],
+  summary: "Send a message to the job's other participant",
+  security: auth,
+  request: {
+    params: z.object({ jobId: z.string() }),
+    body: { content: { "application/json": { schema: sendMessageSchema } } },
+  },
+  responses: {
+    201: json(message, "The stored message"),
+    400: errors[400],
+    401: errors[401],
+    403: errors[403],
+    404: errors[404],
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/messages/{jobId}/read",
+  tags: ["Messages"],
+  summary: "Mark the other party's messages in this job as read",
+  security: auth,
+  request: { params: z.object({ jobId: z.string() }) },
+  responses: {
+    200: json(z.object({ markedRead: z.number().int() }), "How many messages were marked read"),
+    401: errors[401],
+    403: errors[403],
+    404: errors[404],
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Document
 // ---------------------------------------------------------------------------
 
@@ -527,5 +619,6 @@ export const openApiDocument = new OpenApiGeneratorV3(registry.definitions).gene
     { name: "Escrow", description: "Build unsigned escrow contract transactions" },
     { name: "Disputes", description: "Raise, sync and arbitrate disputes" },
     { name: "Reputation", description: "On-chain ratings and aggregates" },
+    { name: "Messages", description: "Job-scoped conversation between the two participants" },
   ],
 });

@@ -12,14 +12,20 @@ import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
 import { fetchJobs, type JobApi } from "../lib/api";
 import { useWallet } from "../hooks/wallet-context";
+import { useUnread } from "../hooks/useUnread";
 
 const PAGE_SIZE = 10;
 const STATUSES = ["CREATED", "FUNDED", "ACTIVE", "COMPLETED", "DISPUTED", "REFUNDED"];
 
 export default function Dashboard() {
   const { publicKey, connecting, connect, error: walletError } = useWallet();
+  // Per-job unread counts, so a job with a new message is visible from the list
+  // without opening it (issue #64).
+  const { byJob } = useUnread();
   const [jobId, setJobId] = useState("");
   const navigate = useNavigate();
+
+  const unreadFor = (id: string) => byJob.find((entry) => entry.jobId === id)?.count ?? 0;
 
   const [status, setStatus] = useState("");
   const [jobs, setJobs] = useState<JobApi[]>([]);
@@ -129,7 +135,10 @@ export default function Dashboard() {
         <ul className="job-list">
           {jobs.map((job) => (
             <li key={job.id}>
-              <strong>{job.title}</strong> <StatusBadge status={job.status} />
+              <strong>{job.title}</strong> <StatusBadge status={job.status} />{" "}
+              {unreadFor(job.id) > 0 && (
+                <span className="badge badge-active">{unreadFor(job.id)} unread</span>
+              )}
               <br />
               <span className="muted">
                 Client:{" "}

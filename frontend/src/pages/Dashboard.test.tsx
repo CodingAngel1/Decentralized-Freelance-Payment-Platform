@@ -21,6 +21,9 @@ const h = vi.hoisted(() => ({
     disconnect: vi.fn(),
   },
   fetchJobs: vi.fn(),
+  // The unread-message badge reads these on mount (issue #64).
+  authenticate: vi.fn(async () => "jwt-1"),
+  fetchUnreadCounts: vi.fn(async () => ({ total: 0, byJob: [] as unknown[] })),
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -30,7 +33,11 @@ vi.mock("react-router-dom", () => ({
   ),
 }));
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
-vi.mock("../lib/api", () => ({ fetchJobs: h.fetchJobs }));
+vi.mock("../lib/api", () => ({
+  fetchJobs: h.fetchJobs,
+  authenticate: h.authenticate,
+  fetchUnreadCounts: h.fetchUnreadCounts,
+}));
 
 import Dashboard from "./Dashboard";
 import type { JobApi } from "../lib/api";

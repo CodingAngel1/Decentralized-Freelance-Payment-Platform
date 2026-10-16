@@ -187,6 +187,10 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/disputes/:id/resolve` | ✅ + arbitrator | Build `dispute.arbitrate` |
 | `POST` | `/api/reputation` | ✅ | Build `reputation.submit` |
 | `GET` | `/api/reputation/:address` | — | Aggregate reputation |
+| `GET` | `/api/messages/unread` | ✅ | Unread message counts (total + per job) |
+| `GET` | `/api/messages/:jobId` | ✅ + participant | A job's conversation, oldest first |
+| `POST` | `/api/messages/:jobId` | ✅ + participant | Send a message |
+| `POST` | `/api/messages/:jobId/read` | ✅ + participant | Mark the other party's messages read |
 
 Rate limiting is 100 requests/minute per IP. The **event indexer** runs
 in-process, polling Soroban RPC for the configured contracts and applying events
@@ -226,6 +230,15 @@ pending state stops double submits. Every address on screen is copyable in one
 click and can be expanded into a QR code to scan into a wallet
 (`frontend/src/components/AddressField.tsx`) — a `G…` address is 56 characters,
 and selecting one by hand is how funds reach the wrong account.
+
+Every write also reports its lifecycle as a toast (`building → awaiting
+signature → confirmed / failed`) that links the confirmed transaction on
+stellar.expert and shows the mapped contract-error message on failure
+(`frontend/src/components/Toaster.tsx`) — feedback that survives navigation,
+unlike the inline messages alone. The job page carries the client↔freelancer
+conversation (`frontend/src/components/Conversation.tsx`); opening a thread
+records the read receipt, and unread counts appear next to each job and on the
+nav.
 
 ## Stack
 

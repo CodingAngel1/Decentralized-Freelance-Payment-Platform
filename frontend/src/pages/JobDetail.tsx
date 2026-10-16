@@ -29,6 +29,7 @@ import { Link, useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
+import Conversation from "../components/Conversation";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
@@ -83,6 +84,11 @@ export default function JobDetail() {
   const [escrow, setEscrow] = useState<EscrowView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [lastHash, setLastHash] = useState<string | null>(null);
+  // The conversation is scoped to the off-chain job id while this page is keyed
+  // by the on-chain escrow id, so the two are bridged once (below) for the
+  // participating wallet rather than on every 5s escrow poll.
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobLookupDone, setJobLookupDone] = useState(false);
   // Dispute timelock: the deadline read from the contract (unix seconds) plus a
   // 1s clock so the remaining time ticks without re-reading the chain each tick.
   const [disputeDeadline, setDisputeDeadline] = useState<bigint | null>(null);
@@ -124,6 +130,32 @@ export default function JobDetail() {
     const timer = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  // Resolve the escrow id to the off-chain job id the messages API scopes to.
+  // Nothing is fetched until a wallet is connected: both endpoints require it.
+  useEffect(() => {
+    if (escrowId === null || !publicKey) {
+      setJobId(null);
+      setJobLookupDone(false);
+      return;
+    }
+    let cancelled = false;
+    setJobLookupDone(false);
+    void findJobIdByEscrow(escrowId, publicKey)
+      .then((id) => {
+        if (cancelled) return;
+        setJobId(id);
+        setJobLookupDone(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setJobId(null);
+        setJobLookupDone(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [escrowId, publicKey]);
 
   // Tick the countdown while a dispute is live, so "refundable in 2d 3h" is
   // accurate to the second between the 5s escrow polls.
@@ -436,6 +468,21 @@ export default function JobDetail() {
             </p>
           )}
           {commentNote && <p className="muted">{commentNote}</p>}
+
+          {/* Only a participant has a conversation to read, and only once the
+              off-chain job that scopes it has been found. */}
+          {isParticipant &&
+            (jobId !== null ? (
+              <Conversation jobId={jobId} />
+            ) : jobLookupDone ? (
+              <section className="conversation">
+                <h2>Messages</h2>
+                <p className="muted">
+                  Messaging is unavailable for this job: it has no off-chain record to
+                  scope the conversation to.
+                </p>
+              </section>
+            ) : null)}
 
           {lastHash && (
             <p>

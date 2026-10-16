@@ -275,3 +275,53 @@ fieldset {
 .qr-code {
   display: block;
 }
+
+/* --- Unread badge ------------------------------------------------------- */
+
+.nav-badge {
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: #e6f0fd;
+  color: #1d4ed8;
+  border: 1px solid #bcd4f6;
+}
+
+/* --- Conversation ------------------------------------------------------- */
+
+.conversation {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.message-list {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* The job page is narrow, so a bubble is capped rather than full width. */
+.message {
+  max-width: 85%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.message p {
+  margin: 0.25rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message-mine {
+  align-self: flex-end;
+  background: #eef4ff;
+  border-color: #bcd4f6;
+}

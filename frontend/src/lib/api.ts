@@ -8,9 +8,31 @@
  * - The backend indexer is still a stub, so jobs appear here only once created
  *   through the API — that is expected for now.
  * - `totalAmountUsdc`/`escrowId` come from Prisma and may serialize as strings.
+ * - `authenticate` caches the JWT it gets back, per address: signing the
+ *   challenge prompts the wallet, and the messaging view would otherwise prompt
+ *   on every unread refresh. See the comment on the cache below.
  */
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+
+/**
+ * How long a token from `authenticate` is reused.
+ *
+ * Deliberately under the server's 7-day JWT expiry, so a cached token is never
+ * presented after the server has stopped accepting it.
+ */
+const TOKEN_TTL_MS = 6 * 24 * 60 * 60 * 1000;
+
+/** Signed-in sessions, keyed by Stellar address. */
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+/** In-flight challenges, so two components mounting together share one prompt. */
+const pendingAuth = new Map<string, Promise<string>>();
+
+/** Drop a cached token (all addresses when called with none). */
+export function clearAuthToken(address?: string): void {
+  if (address === undefined) tokenCache.clear();
+  else tokenCache.delete(address);
+}
 
 export interface JobListQuery {
   status?: string;
@@ -83,28 +105,52 @@ export interface CreateJobInput {
 /**
  * Complete the wallet challenge-response flow and return a bearer token.
  * `signMessage` signs the challenge nonce per SEP-53 (see Freighter).
+ *
+ * The token is cached per address and reused for `TOKEN_TTL_MS`, because every
+ * signature is a wallet prompt: without this, a page that refreshes an
+ * authenticated read would ask the user to sign each time. Concurrent callers
+ * that miss the cache share a single in-flight challenge for the same reason.
+ * Pass `{ fresh: true }` to force a new challenge (e.g. after a 401).
  */
 export async function authenticate(
   address: string,
   signMessage: (message: string) => Promise<string>,
+  options: { fresh?: boolean } = {},
 ): Promise<string> {
-  const challengeRes = await fetch(
-    `${API_BASE_URL}/api/users/challenge?address=${encodeURIComponent(address)}`,
-  );
-  if (!challengeRes.ok) {
-    throw new Error(`Could not get an auth challenge (HTTP ${challengeRes.status})`);
+  if (!options.fresh) {
+    const cached = tokenCache.get(address);
+    if (cached && cached.expiresAt > Date.now()) return cached.token;
+    const inflight = pendingAuth.get(address);
+    if (inflight) return inflight;
   }
-  const { nonce } = (await challengeRes.json()) as { nonce: string };
 
-  const signature = await signMessage(nonce);
-  const authRes = await fetch(`${API_BASE_URL}/api/users/auth`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ address, signature, nonce }),
-  });
-  if (!authRes.ok) throw new Error(`Authentication failed (HTTP ${authRes.status})`);
-  const { token } = (await authRes.json()) as { token: string };
-  return token;
+  const challenge = (async () => {
+    const challengeRes = await fetch(
+      `${API_BASE_URL}/api/users/challenge?address=${encodeURIComponent(address)}`,
+    );
+    if (!challengeRes.ok) {
+      throw new Error(`Could not get an auth challenge (HTTP ${challengeRes.status})`);
+    }
+    const { nonce } = (await challengeRes.json()) as { nonce: string };
+
+    const signature = await signMessage(nonce);
+    const authRes = await fetch(`${API_BASE_URL}/api/users/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address, signature, nonce }),
+    });
+    if (!authRes.ok) throw new Error(`Authentication failed (HTTP ${authRes.status})`);
+    const { token } = (await authRes.json()) as { token: string };
+    tokenCache.set(address, { token, expiresAt: Date.now() + TOKEN_TTL_MS });
+    return token;
+  })();
+
+  pendingAuth.set(address, challenge);
+  try {
+    return await challenge;
+  } finally {
+    pendingAuth.delete(address);
+  }
 }
 
 /** Create the off-chain job record (requires a token from `authenticate`). */
@@ -244,4 +290,80 @@ export async function linkDisputeId(
   });
   if (!res.ok) throw new Error(`Could not record the dispute id (HTTP ${res.status})`);
   return (await res.json()) as DisputeApi;
+}
+
+// ---------------------------------------------------------------------------
+// Messaging (issue #64)
+// ---------------------------------------------------------------------------
+
+/**
+ * A job-scoped message. `jobId` is the off-chain job id, not the escrow id, and
+ * `sender` is included by the conversation endpoint so the view can tell the two
+ * parties apart without a second lookup.
+ */
+export interface MessageApi {
+  id: string;
+  jobId: string;
+  senderId: string;
+  body: string;
+  createdAt: string;
+  /** Set once the recipient has read it; `null` means unread. */
+  readAt: string | null;
+  sender?: { stellarAddress: string; displayName?: string | null };
+}
+
+/** Unread counts for the authenticated user: a total, and one per job. */
+export interface UnreadCounts {
+  total: number;
+  byJob: { jobId: string; count: number }[];
+}
+
+/**
+ * Read a job's conversation. Only the job's two participants may call this; a
+ * third party gets a 403 from the API.
+ */
+export async function fetchMessages(jobId: string, token: string): Promise<MessageApi[]> {
+  const res = await fetch(`${API_BASE_URL}/api/messages/${encodeURIComponent(jobId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not load the conversation (HTTP ${res.status})`);
+  return (await res.json()) as MessageApi[];
+}
+
+/** Send a message to the job's other participant. */
+export async function sendMessage(
+  jobId: string,
+  body: string,
+  token: string,
+): Promise<MessageApi> {
+  const res = await fetch(`${API_BASE_URL}/api/messages/${encodeURIComponent(jobId)}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) throw new Error(`Could not send the message (HTTP ${res.status})`);
+  return (await res.json()) as MessageApi;
+}
+
+/** Mark the other party's messages in this job read; returns how many changed. */
+export async function markMessagesRead(jobId: string, token: string): Promise<number> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/messages/${encodeURIComponent(jobId)}/read`,
+    { method: "POST", headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw new Error(`Could not update read state (HTTP ${res.status})`);
+  const { markedRead } = (await res.json()) as { markedRead: number };
+  return markedRead;
+}
+
+/** Total unread messages, plus one count per job, for the authenticated user. */
+export async function fetchUnreadCounts(token: string): Promise<UnreadCounts> {
+  const res = await fetch(`${API_BASE_URL}/api/messages/unread`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not load unread counts (HTTP ${res.status})`);
+  return (await res.json()) as UnreadCounts;
 }

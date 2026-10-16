@@ -1,5 +1,17 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { authenticate, buildJobsQuery, createDispute, createJob, linkDisputeId, submitRating } from "./api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  authenticate,
+  buildJobsQuery,
+  clearAuthToken,
+  createDispute,
+  createJob,
+  fetchMessages,
+  fetchUnreadCounts,
+  linkDisputeId,
+  markMessagesRead,
+  sendMessage,
+  submitRating,
+} from "./api";
 
 describe("buildJobsQuery", () => {
   it("omits empty filters", () => {
@@ -30,6 +42,11 @@ describe("buildJobsQuery", () => {
 });
 
 describe("authenticate", () => {
+  beforeEach(() => {
+    // The token cache is module state; each test starts signed out.
+    clearAuthToken();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -52,6 +69,131 @@ describe("authenticate", () => {
       signature: "sig-base64",
       nonce: "nonce-1",
     });
+  });
+
+  it("reuses the token so a page does not prompt the wallet on every read", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ nonce: "nonce-1" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: "jwt-1" }), { status: 200 }))
+      // This second challenge must never be reached.
+      .mockResolvedValueOnce(new Response(JSON.stringify({ nonce: "nonce-2" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: "jwt-2" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const signMessage = vi.fn(async () => "sig-base64");
+
+    expect(await authenticate("GCLIENT", signMessage)).toBe("jwt-1");
+    expect(await authenticate("GCLIENT", signMessage)).toBe("jwt-1");
+
+    expect(signMessage).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares one challenge between concurrent callers", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ nonce: "nonce-1" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: "jwt-1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const signMessage = vi.fn(async () => "sig-base64");
+
+    const [a, b] = await Promise.all([
+      authenticate("GCLIENT", signMessage),
+      authenticate("GCLIENT", signMessage),
+    ]);
+
+    expect([a, b]).toEqual(["jwt-1", "jwt-1"]);
+    expect(signMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-challenges when asked for a fresh token", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ nonce: "n", token: "jwt" }), { status: 200 }),
+    );
+    // The challenge and auth responses differ; give each call its own pair.
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ nonce: "n1" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: "jwt-1" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ nonce: "n2" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: "jwt-2" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const signMessage = vi.fn(async () => "sig");
+
+    expect(await authenticate("GCLIENT", signMessage)).toBe("jwt-1");
+    expect(await authenticate("GCLIENT", signMessage, { fresh: true })).toBe("jwt-2");
+    expect(signMessage).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("messages", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("GETs a job's conversation with a bearer token", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify([{ id: "m1", jobId: "job-1", body: "hi" }]), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const messages = await fetchMessages("job-1", "jwt-1");
+
+    expect(messages[0].body).toBe("hi");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/messages/job-1");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-1");
+  });
+
+  it("throws with the status when the conversation is refused", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 403 })),
+    );
+
+    await expect(fetchMessages("job-1", "jwt-1")).rejects.toThrow(/HTTP 403/);
+  });
+
+  it("POSTs a message body", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ id: "m2", jobId: "job-1", body: "hello" }), { status: 201 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const sent = await sendMessage("job-1", "hello", "jwt-1");
+
+    expect(sent.id).toBe("m2");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/messages/job-1");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ body: "hello" });
+  });
+
+  it("POSTs a read receipt and returns how many messages changed", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ markedRead: 2 }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await markMessagesRead("job-1", "jwt-1")).toBe(2);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/messages/job-1/read");
+    expect(init.method).toBe("POST");
+  });
+
+  it("GETs the unread counts", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ total: 3, byJob: [{ jobId: "job-1", count: 3 }] }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const counts = await fetchUnreadCounts("jwt-1");
+
+    expect(counts.total).toBe(3);
+    expect(counts.byJob[0]).toEqual({ jobId: "job-1", count: 3 });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/messages/unread");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-1");
   });
 });
 

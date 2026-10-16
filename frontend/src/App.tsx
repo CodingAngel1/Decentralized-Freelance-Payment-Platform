@@ -14,6 +14,7 @@ import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { WalletProvider } from "./hooks/WalletProvider";
 import { ToastProvider } from "./hooks/ToastProvider";
 import { useWallet } from "./hooks/wallet-context";
+import { useUnread } from "./hooks/useUnread";
 import AddressField from "./components/AddressField";
 import Toaster from "./components/Toaster";
 import Dashboard from "./pages/Dashboard";
@@ -23,10 +24,18 @@ import Profile from "./pages/Profile";
 
 function Nav() {
   const { publicKey, connecting, connect, disconnect } = useWallet();
+  // Unread messages are the one thing a user cannot see from the current page,
+  // so the total lives in the nav (issue #64).
+  const { total: unread } = useUnread();
   return (
     <nav className="nav">
       <Link to="/">My Jobs</Link>
       <Link to="/post">Post a Job</Link>
+      {publicKey && unread > 0 && (
+        <span className="nav-badge" role="status">
+          {unread} unread message{unread === 1 ? "" : "s"}
+        </span>
+      )}
       <span className="nav-spacer">
         {publicKey ? (
           <>
