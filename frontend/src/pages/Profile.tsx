@@ -111,15 +111,19 @@ export default function Profile() {
         </p>
       )}
 
-      {isPending("reputation") && <p>Loading…</p>}
+      {isPending("reputation") && (
+        <p role="status" aria-live="polite">
+          Loading…
+        </p>
+      )}
       {error && (
-        <p role="alert" className="alert alert-error">
+        <p role="alert" aria-live="assertive" className="alert alert-error">
           {error}
         </p>
       )}
 
       {reputation && (
-        <p>
+        <p role="status" aria-live="polite">
           {average === null ? (
             <>No ratings yet.</>
           ) : (

@@ -33,7 +33,7 @@ function Nav() {
   // so the total lives in the nav (issue #64).
   const { total: unread } = useUnread();
   return (
-    <nav className="nav">
+    <nav className="nav" aria-label="Main navigation">
       <Link to="/">My Jobs</Link>
       <Link to="/activity">Activity</Link>
       <Link to="/post">Post a Job</Link>
@@ -58,6 +58,9 @@ export default function App() {
   return (
     <WalletProvider>
       <BrowserRouter>
+        <a href="#main-content" className="skip-link">
+          Skip to main content
+        </a>
         <Nav />
         <Routes>
           <Route path="/" element={<Dashboard />} />
