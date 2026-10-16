@@ -67,12 +67,12 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | `dispute` contract | ✅ Complete — verified raise, M-of-N arbitrator panel, resolution that calls back into escrow, dispute timelock |
 | `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings, amount-weighted aggregates, per-pair anti-spam (`docs/REPUTATION.md`) |
 | Contract tests | ✅ 86 tests: 83 unit tests (escrow 49, dispute 17, reputation 17) covering every state transition and failure path, plus 3 end-to-end tests in `contracts/dispute/tests/full_flow.rs` that drive escrow + dispute + reputation together |
-| Backend tests | ✅ 115 tests |
-| Frontend tests | ✅ 122 tests (Vitest + Testing Library) — pages, components and lib helpers |
+| Backend tests | ✅ 138 tests |
+| Frontend tests | ✅ 156 tests (Vitest + Testing Library) — pages, components and lib helpers |
 | Testnet deployment | ✅ Deployed and initialized (ids in [`deployments/testnet.json`](./deployments/testnet.json)) |
-| Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation |
+| Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation, browse a profile's job history and ratings, export an escrow receipt |
 | Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC, with a dead-letter table for events it cannot apply |
-| Job discovery / filtering | ✅ Dashboard lists jobs with status/pagination (from the backend API) |
+| Job discovery / filtering | ✅ Dashboard lists jobs with status + skill-tag filters and pagination (from the backend API) |
 | Multi-arbitrator / timelocked disputes | ✅ Panel with a timelock escape hatch from `Disputed` (see [`docs/DISPUTES.md`](./docs/DISPUTES.md)) |
 | Dispute resolution authorization | ✅ `POST /api/disputes/:id/resolve` requires an `ARBITRATOR_ADDRESSES` entry, and fails closed when unset |
 | Assets beyond USDC | ✅ Registry with USDC + XLM (`docs/ASSETS.md`); any SAC can be registered |
@@ -169,8 +169,14 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `GET` | `/api/users/challenge` | — | Issue a single-use nonce for SEP-53 signing |
 | `POST` | `/api/users/auth` | — | Verify the signed message, return a JWT |
 | `GET` | `/api/users/:address` | — | Public profile |
+| `GET` | `/api/users/:address/transactions` | — | Indexed on-chain history for the address's escrows, with explorer links |
+| `GET` | `/api/users/:address/reminders` | — | Milestone deadlines that are overdue or due soon (`?withinHours=`) |
 | `PUT` | `/api/users/me` | ✅ | Update your own profile |
-| `GET` | `/api/jobs` | — | List jobs with status filter + pagination |
+| `GET` | `/api/jobs` | — | List jobs with status + `tag` filters and pagination |
+| `GET` | `/api/jobs/tags` | — | The curated skill-tag taxonomy |
+| `GET` | `/api/jobs/saved` | ✅ | The caller's bookmarked jobs, newest first |
+| `POST` | `/api/jobs/:id/save` | ✅ | Bookmark a job (idempotent) |
+| `DELETE` | `/api/jobs/:id/save` | ✅ | Remove a bookmark |
 | `POST` | `/api/jobs` | ✅ | Create the off-chain job record |
 | `GET` | `/api/jobs/:id` | — | Job detail with milestones |
 | `PUT` | `/api/jobs/:id/assign` | ✅ | Assign a freelancer |
@@ -181,12 +187,26 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/escrow/build/reclaim-dispute` | ✅ | Build `escrow.reclaim_after_dispute_timeout` (client, after the 7-day dispute timelock) |
 | `POST` | `/api/escrow/build/update-milestones` | ✅ | Build `escrow.update_milestones` (client, before funding) |
 | `PUT` | `/api/escrow/:escrowId/milestones` | ✅ | Record a confirmed milestone edit |
+| `GET` | `/api/escrow/:escrowId/receipt` | — | Printable receipt: job, milestones, releases, transaction links |
 | `POST` | `/api/escrow/sync/:jobId` | ✅ | Link an escrow id to a job |
 | `POST` | `/api/disputes` | ✅ | Build `escrow.open_dispute` and record the dispute |
 | `GET` | `/api/disputes/:id` | — | Dispute detail |
 | `POST` | `/api/disputes/:id/resolve` | ✅ + arbitrator | Build `dispute.arbitrate` |
 | `POST` | `/api/reputation` | ✅ | Build `reputation.submit` |
 | `GET` | `/api/reputation/:address` | — | Aggregate reputation |
+| `GET` | `/api/reputation/:address/ratings` | — | Individual ratings received (score, job, date) |
+
+### Skills and categories
+
+Jobs carry curated skill tags (issue #70). `backend/src/lib/tags.ts` holds the
+canonical taxonomy — 16 slugs grouped across Development, Blockchain, Data,
+Design, Content, Media and Business — and `createJobSchema` rejects anything
+outside it, de-duplicates, and caps a job at 8 tags. `GET /api/jobs/tags`
+serves the list, and `GET /api/jobs?tag=<slug>` filters with an indexed
+containment query. The frontend keeps a mirror of the same list in
+`frontend/src/lib/tags.ts` so the picker renders without a round-trip; the
+backend copy is canonical, and `backend/src/__tests__/tags.test.ts` fails if the
+two ever drift apart.
 
 Rate limiting is 100 requests/minute per IP, and every request is logged as one
 structured JSON line (method, path, status, duration) unless `NODE_ENV=test`.
@@ -197,16 +217,56 @@ resume where they left off. `SIGTERM`/`SIGINT` stop the indexer, drain in-flight
 requests, and disconnect Prisma before the process exits, so a deploy neither
 cuts a response nor leaves the interval and connection dangling.
 
+### OpenAPI spec
+
+The routes are also described in OpenAPI 3.0, generated from the same Zod
+schemas `validate()` enforces so the spec and the validation cannot drift.
+Outside production the API serves the document and a Swagger UI explorer:
+
+| Path | Purpose |
+|------|---------|
+| `GET /api/docs` | Swagger UI explorer |
+| `GET /api/docs/openapi.json` | The raw OpenAPI 3.0 document |
+
+Both are registered only when `NODE_ENV !== "production"`, so a deployed
+instance exposes neither. Add a new route to `backend/src/openapi.ts`;
+`backend/src/__tests__/openapi.test.ts` walks the routers and fails if one is
+missing from the spec.
+
 ## Frontend
 
 React + TypeScript + Vite, with Freighter for signing.
 
 | Route | Page | Purpose |
 |-------|------|---------|
-| `/` | `Dashboard` | Filterable, paginated job list from the API |
-| `/post` | `PostJob` | Milestones + asset picker → on-chain create/fund, then the off-chain record |
+| `/` | `Dashboard` | Filterable by status and skill tag, paginated job list, plus bookmarks and a saved-only view |
+| `/post` | `PostJob` | Skill tags + milestones + asset picker → on-chain create/fund, then the off-chain record |
+| `/activity` | `Activity` | Earnings at a glance: open escrows, completed jobs, and per-asset released/still-locked totals |
 | `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
 | `/profile/:address` | `Profile` | On-chain reputation aggregate (weighted average + rating count) |
+
+A connected wallet can bookmark a job from the list and switch it to a
+saved-only view (`frontend/src/hooks/useSavedJobs.ts`); bookmarks are personal
+and off-chain, stored per user, and the toggle is idempotent on both sides.
+
+`/activity` (issue #73) answers "how much has this address been paid, and how
+much is still in escrow?" without opening each job: it reads `/api/jobs` twice
+(`?client=` and `?freelancer=`), merges the two lists by id, and totals them with
+`frontend/src/lib/activity.ts`. Totals are kept **per asset** — XLM and USDC are
+never added together — and summed in integer base units (`bigint`), so a
+total is exact rather than `0.30000000000000004`. "Released" deliberately spans
+both roles (paid out as client, earned as freelancer), with the role counts
+shown next to it, and the page states that its two reads are capped at the API's
+100-job maximum per role.
+
+`/activity` and every other screen that shows an amount also shows an
+approximate fiat figure (`frontend/src/components/FiatEstimate.tsx`, issue
+#76), sourced from CoinGecko's keyless `simple/price` feed and cached for five
+minutes (`frontend/src/lib/prices.ts`). The figure is always labelled `est.`,
+and when the feed is slow, rate-limited or down, nothing is shown at all — an
+estimate never blocks or alters the amount it sits beside. `VITE_PRICE_API_URL`
+and `VITE_PRICE_API_KEY` are optional overrides; the default needs no
+configuration.
 
 Every write shows the transaction hash and a stellar.expert link, contract errors
 are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target
@@ -217,6 +277,17 @@ and selecting one by hand is how funds reach the wrong account. A top-level erro
 boundary wraps the routes, so a render error in one page shows a short fallback
 with a reload control rather than blanking the app.
 
+Every write also reports its lifecycle as a toast (`building → awaiting
+signature → confirmed / failed`) that links the confirmed transaction on
+stellar.expert and shows the mapped contract-error message on failure
+(`frontend/src/components/Toaster.tsx`) — feedback that survives navigation,
+unlike the inline messages alone. The job page carries the client↔freelancer
+conversation (`frontend/src/components/Conversation.tsx`); opening a thread
+records the read receipt, and unread counts appear next to each job and on the
+nav. A milestone set can be saved as a template and re-applied from the
+post-a-job form (`frontend/src/lib/templates.ts`, stored per wallet in the
+browser).
+
 ## Stack
 
 | Layer | Choice |
@@ -226,7 +297,7 @@ with a reload control rather than blanking the app.
 | Wallet | Freighter browser extension (SEP-53 message signing) |
 | Backend | Express 4 + Prisma 5 + PostgreSQL, Zod validation, JWT (`jose`), Helmet, rate limiting |
 | Chain access | `@stellar/stellar-sdk` 12 (Soroban RPC + Horizon) |
-| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend, dependency vulnerability scan (advisory; `npm audit` + `cargo audit`) |
+| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend (typecheck, tests, and Prisma migrations applied against a Postgres service), dependency vulnerability scan (advisory; `npm audit` + `cargo audit`) |
 
 ## Repository layout
 
@@ -238,7 +309,7 @@ contracts/            Cargo workspace
                       (tests/full_flow.rs drives all three contracts end to end)
   reputation/         Ratings and weighted aggregates
 backend/              Express API, Prisma schema + migrations, event indexer
-  src/lib/            Pure helpers (events, escrowArgs, assets, signature, authNonce, access)
+  src/lib/            Pure helpers (events, escrowArgs, assets, signature, authNonce, access, reminders, receipt)
   prisma/migrations/  Committed SQL migrations, applied on container start
 frontend/             React app, Vitest config, vercel.json
 deployments/          testnet.json — machine-readable record of the live contracts
@@ -262,11 +333,21 @@ docker compose up --build
 | Backend | <http://localhost:3000> (`GET /health`) |
 | PostgreSQL | `localhost:5432` |
 
-Pass contract ids through the environment to bake them into the frontend image:
+Pass any `VITE_*` value through the environment to bake it into the frontend
+image — compose forwards the whole set (`VITE_NETWORK`, `VITE_API_URL`,
+`VITE_ESCROW_CONTRACT_ID`, `VITE_DISPUTE_CONTRACT_ID`,
+`VITE_REPUTATION_CONTRACT_ID`, `VITE_USDC_CONTRACT_ID`, `VITE_XLM_CONTRACT_ID`)
+as build args, so a containerised build is not stuck on `http://localhost:3000`:
 
 ```bash
-VITE_ESCROW_CONTRACT_ID=C... docker compose up --build
+VITE_API_URL=https://api.example.com \
+VITE_ESCROW_CONTRACT_ID=C... \
+VITE_XLM_CONTRACT_ID=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  docker compose up --build
 ```
+
+These are the same variables as the [Frontend configuration](#frontend-frontendenv)
+table below; Vite inlines them, so changing one means rebuilding the image.
 
 ### Manual
 
@@ -290,8 +371,9 @@ Deploy and exercise the contracts on testnet:
 
 ```bash
 stellar keys generate deployer --network testnet --fund
-scripts/deploy_testnet.sh     # builds, deploys, initializes, records ids
-scripts/demo_testnet.sh       # create → fund → release → rate → aggregate
+scripts/deploy_testnet.sh         # builds, deploys, initializes, records ids
+scripts/demo_testnet.sh           # create → fund → release → rate → aggregate
+scripts/demo_dispute_testnet.sh   # open_dispute → raise → approve → arbitrate
 ```
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for conventions and the manual setup in full.
@@ -331,6 +413,7 @@ not just a restart.
 | `ARBITRATOR_ADDRESSES` | for dispute resolution | Comma-separated panel addresses allowed to call `POST /api/disputes/:id/resolve`. **Empty disables the route** — it fails closed |
 | `CORS_ORIGIN` | for production | Comma-separated browser origins allowed to call the API. Empty allows every origin and logs a warning in production |
 | `INDEXER_POLL_INTERVAL_MS` | — | Defaults to `5000` |
+| `TRUST_PROXY` | — | Reverse proxy hop count (e.g. `1` behind Render/Heroku/Nginx) so rate limiting keys on real client IP. Defaults to `0` |
 | `PORT` | — | Defaults to `3000` |
 
 ## Testing
@@ -357,14 +440,19 @@ npm test
 npm run build
 ```
 
-CI runs all three on every push and pull request to `main`
+CI runs all three on every push and pull request to `main` and
+`integration/staging`, and applies the backend's Prisma migrations against a
+Postgres service so a broken or drifted migration fails the build
 ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)).
 
 ## Deployment
 
 Contract ids change on every deploy. `scripts/deploy_testnet.sh` regenerates
-`frontend/.env` automatically (backing up the previous file) so the app never
-keeps pointing at superseded contracts.
+`frontend/.env` and `backend/.env.contracts` automatically (backing up the
+previous frontend file) and prints the values the Render dashboard needs, so no
+consumer keeps pointing at superseded contracts. The deployed backend also warns
+at startup when its configured ids no longer match `deployments/testnet.json`
+(issue #91), and `render.yaml` deliberately carries no contract ids.
 
 | Piece | Host | Why there |
 |-------|------|-----------|

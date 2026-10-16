@@ -1,0 +1,15 @@
+# The backend image is built from the repository root (see render.yaml and
+# docker-compose.yml) so backend/Dockerfile can copy in deployments/testnet.json.
+# Keep the context small and free of secrets. The frontend keeps its own
+# frontend/.dockerignore because its build context is frontend/.
+.git
+.github
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/.env.bak
+**/npm-debug.log
+contracts/target
+frontend
+docs

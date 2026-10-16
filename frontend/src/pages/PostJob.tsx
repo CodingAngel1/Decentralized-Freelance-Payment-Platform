@@ -13,20 +13,35 @@
  *
  * The escrow contract is asset-agnostic; `lib/assets.ts` maps the chosen symbol
  * to its SAC contract id and decimals.
+ *
+ * Milestone sets can be saved as templates and re-applied here, so a client who
+ * posts the same shape of job repeatedly does not retype it (issue #75).
+ * Templates live in the browser, keyed per wallet (`lib/templates.ts`).
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
+import FiatEstimate from "../components/FiatEstimate";
 import { useEscrow, type CreateAndFundResult } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { ASSETS, formatAmount, getAsset, toBaseUnits } from "../lib/assets";
 import { authenticate, createJob, linkEscrowId } from "../lib/api";
+import { MAX_JOB_TAGS, tagsByCategory } from "../lib/tags";
 import { CONTRACT_ADDRESSES, explorerTxUrl } from "../lib/stellar";
+import {
+  deleteTemplate,
+  listTemplates,
+  saveTemplate,
+  type MilestoneTemplate,
+} from "../lib/templates";
 
 interface MilestoneRow {
   amount: string;
 }
+
+/** Maximum milestones per escrow — must match `MAX_MILESTONES` in the contract. */
+const MAX_MILESTONES = 20;
 
 /**
  * Base units for one row's raw input, treating anything that is not a plain
@@ -51,14 +66,35 @@ export default function PostJob() {
     ASSETS.find((a) => a.contractId)?.symbol ?? ASSETS[0]?.symbol ?? "USDC",
   );
   const [expiryDays, setExpiryDays] = useState("30");
+  // Curated skill-tag slugs attached to the job (issue #70).
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [rows, setRows] = useState<MilestoneRow[]>([{ amount: "" }]);
   const [created, setCreated] = useState<CreateAndFundResult | null>(null);
   const [recordError, setRecordError] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<MilestoneTemplate[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [templateNote, setTemplateNote] = useState<string | null>(null);
 
   const asset = getAsset(assetSymbol);
 
+  // Templates belong to the connected wallet, so they change when it does.
+  useEffect(() => {
+    setTemplates(publicKey ? listTemplates(publicKey) : []);
+    setSelectedTemplate("");
+    setTemplateNote(null);
+  }, [publicKey]);
+
   const updateRow = (i: number, amount: string) =>
     setRows((r) => r.map((row, idx) => (idx === i ? { amount } : row)));
+
+  /** Toggle a skill tag, never exceeding the cap the API enforces. */
+  const toggleTag = (slug: string) =>
+    setSelectedTags((prev) =>
+      prev.includes(slug)
+        ? prev.filter((entry) => entry !== slug)
+        : [...prev, slug].slice(0, MAX_JOB_TAGS),
+    );
 
   // Sum in base units and format once, so the on-screen total is the exact value
   // the API stores. Adding decimals as JavaScript numbers shows
@@ -67,6 +103,56 @@ export default function PostJob() {
     rows.reduce((sum, r) => sum + amountToBaseUnits(r.amount, asset.decimals), 0n),
     asset.decimals,
   );
+
+  /** Milestones with a usable amount, in the asset's base units. */
+  const pricedRows = () =>
+    rows.filter((row) => amountToBaseUnits(row.amount, asset.decimals) > 0n);
+
+  const canSaveTemplate = publicKey !== null && rows.some((r) => Number(r.amount) > 0);
+
+  /**
+   * Restore a saved milestone set: the amounts and, when this build has a SAC
+   * for it, the asset they were written in. An asset without a configured SAC
+   * is left alone rather than selected — a disabled option would block submit.
+   */
+  function applyTemplate(id: string) {
+    const template = templates.find((entry) => entry.id === id);
+    if (!template) return;
+
+    const savedAsset = ASSETS.find((entry) => entry.symbol === template.asset);
+    if (savedAsset?.contractId) setAssetSymbol(savedAsset.symbol);
+    setRows(
+      template.milestones.length > 0
+        ? template.milestones.map((milestone) => ({ amount: milestone.amount }))
+        : [{ amount: "" }],
+    );
+    setTemplateNote(`Applied “${template.name}”.`);
+  }
+
+  function handleSaveTemplate() {
+    if (!publicKey || !canSaveTemplate) return;
+    const saved = saveTemplate(publicKey, {
+      name: templateName,
+      asset: asset.symbol,
+      milestones: pricedRows().map((row) => ({ amount: row.amount })),
+    });
+    if (!saved) {
+      setTemplateNote("Could not save the template — give it a name first.");
+      return;
+    }
+    setTemplates(listTemplates(publicKey));
+    setSelectedTemplate(saved.id);
+    setTemplateName("");
+    setTemplateNote(`Saved template “${saved.name}”.`);
+  }
+
+  function handleDeleteTemplate() {
+    if (!publicKey || !selectedTemplate) return;
+    deleteTemplate(publicKey, selectedTemplate);
+    setTemplates(listTemplates(publicKey));
+    setSelectedTemplate("");
+    setTemplateNote("Template deleted.");
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -100,6 +186,7 @@ export default function PostJob() {
           title: title.trim(),
           description: description.trim(),
           asset: asset.symbol,
+          tags: selectedTags,
           expiresAt,
           milestones: rows.map((r, i) => ({
             description: `Milestone ${i + 1}`,
@@ -141,41 +228,78 @@ export default function PostJob() {
 
       <form onSubmit={handleSubmit}>
         <p>
-          <label>
+          <label htmlFor="post-job-title">
             Title
-            <br />
             <input
+              id="post-job-title"
+              className="form-control"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Landing page redesign"
               minLength={3}
               maxLength={120}
-              size={60}
               required
             />
           </label>
         </p>
 
         <p>
-          <label>
+          <label htmlFor="post-job-description">
             Description
-            <br />
             <textarea
+              id="post-job-description"
+              className="form-control"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What needs to be delivered…"
               minLength={10}
               rows={3}
-              cols={60}
               required
             />
           </label>
         </p>
 
+        <fieldset>
+          <legend>
+            Skills ({selectedTags.length}/{MAX_JOB_TAGS})
+          </legend>
+          <p className="muted">
+            Tag the work so clients and freelancers can filter for it. Selection is
+            optional.
+          </p>
+          {tagsByCategory().map(({ category, tags }) => (
+            <div key={category} className="tag-group">
+              <strong>{category}</strong>
+              <div>
+                {tags.map((skill) => {
+                  const checked = selectedTags.includes(skill.slug);
+                  return (
+                    <label key={skill.slug} className="tag-option">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        // At the cap the remaining boxes lock, so the selection
+                        // can never be rejected by the API on submit.
+                        disabled={!checked && selectedTags.length >= MAX_JOB_TAGS}
+                        onChange={() => toggleTag(skill.slug)}
+                      />{" "}
+                      {skill.label}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </fieldset>
+
         <p>
-          <label>
+          <label htmlFor="post-job-asset">
             Payment asset{" "}
-            <select value={assetSymbol} onChange={(e) => setAssetSymbol(e.target.value)}>
+            <select
+              id="post-job-asset"
+              value={assetSymbol}
+              onChange={(e) => setAssetSymbol(e.target.value)}
+            >
               {ASSETS.map((a) => (
                 <option key={a.symbol} value={a.symbol} disabled={!a.contractId}>
                   {a.symbol}
@@ -192,26 +316,96 @@ export default function PostJob() {
         </p>
 
         <p>
-          <label>
+          <label htmlFor="post-job-freelancer">
             Freelancer Stellar address
-            <br />
             <input
+              id="post-job-freelancer"
+              className="form-control"
               value={freelancer}
               onChange={(e) => setFreelancer(e.target.value)}
               placeholder="G..."
-              size={60}
               required
             />
           </label>
         </p>
 
         <fieldset>
+          <legend>Templates</legend>
+          {!publicKey ? (
+            <p className="muted">Connect your wallet to save and reuse milestone templates.</p>
+          ) : (
+            <>
+              {templates.length === 0 ? (
+                <p className="muted">No saved templates yet.</p>
+              ) : (
+                <p>
+                  <label>
+                    Saved template{" "}
+                    <select
+                      value={selectedTemplate}
+                      onChange={(e) => setSelectedTemplate(e.target.value)}
+                    >
+                      <option value="">Choose…</option>
+                      {templates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name} ({template.milestones.length} milestones,{" "}
+                          {template.asset})
+                        </option>
+                      ))}
+                    </select>
+                  </label>{" "}
+                  <button
+                    type="button"
+                    onClick={() => applyTemplate(selectedTemplate)}
+                    disabled={!selectedTemplate}
+                  >
+                    Apply template
+                  </button>{" "}
+                  <button
+                    type="button"
+                    onClick={handleDeleteTemplate}
+                    disabled={!selectedTemplate}
+                  >
+                    Delete
+                  </button>
+                </p>
+              )}
+
+              <p>
+                <label>
+                  Save these milestones as{" "}
+                  <input
+                    value={templateName}
+                    onChange={(e) => setTemplateName(e.target.value)}
+                    placeholder="Weekly retainer"
+                    maxLength={60}
+                  />
+                </label>{" "}
+                <button
+                  type="button"
+                  onClick={handleSaveTemplate}
+                  disabled={templateName.trim().length === 0 || !canSaveTemplate}
+                >
+                  Save template
+                </button>
+              </p>
+              {templateNote && (
+                <p className="muted" role="status">
+                  {templateNote}
+                </p>
+              )}
+            </>
+          )}
+        </fieldset>
+
+        <fieldset>
           <legend>Milestones ({asset.symbol})</legend>
           {rows.map((row, i) => (
-            <p key={i}>
-              <label>
+            <div key={i} className="milestone-row">
+              <label htmlFor={`milestone-amount-${i}`}>
                 Amount #{i + 1}{" "}
                 <input
+                  id={`milestone-amount-${i}`}
                   type="number"
                   min="0"
                   step={`0.${"0".repeat(asset.decimals - 1)}1`}
@@ -221,24 +415,33 @@ export default function PostJob() {
                 />
               </label>{" "}
               {rows.length > 1 && (
-                <button type="button" onClick={() => setRows((r) => r.filter((_, x) => x !== i))}>
+                <button
+                  type="button"
+                  aria-label={`Remove milestone ${i + 1}`}
+                  onClick={() => setRows((r) => r.filter((_, x) => x !== i))}
+                >
                   Remove
                 </button>
               )}
-            </p>
+            </div>
           ))}
-          <button type="button" onClick={() => setRows((r) => [...r, { amount: "" }])}>
+          <button type="button" onClick={() => setRows((r) => [...r, { amount: "" }])} disabled={rows.length >= MAX_MILESTONES}>
             Add milestone
           </button>
+          {rows.length >= MAX_MILESTONES && (
+            <p className="muted">Maximum of {MAX_MILESTONES} milestones reached.</p>
+          )}
           <p>
-            Total: <strong>{total}</strong> {asset.symbol}
+            Total: <strong>{total}</strong> {asset.symbol}{" "}
+            <FiatEstimate amount={total} asset={asset.symbol} />
           </p>
         </fieldset>
 
         <p>
-          <label>
+          <label htmlFor="post-job-expiry">
             Expiry (days from now){" "}
             <input
+              id="post-job-expiry"
               type="number"
               min="1"
               value={expiryDays}
@@ -251,6 +454,7 @@ export default function PostJob() {
           type="submit"
           className="btn-primary"
           disabled={isPending("create") || connecting || !asset.contractId}
+          aria-busy={isPending("create")}
         >
           {isPending("create")
             ? "Submitting…"
@@ -261,13 +465,13 @@ export default function PostJob() {
       </form>
 
       {error && (
-        <p role="alert" className="alert alert-error">
+        <p role="alert" aria-live="assertive" className="alert alert-error">
           {error}
         </p>
       )}
 
       {created && (
-        <p className="alert">
+        <p role="status" aria-live="polite" className="alert">
           Escrow #{created.id.toString()} created and funded. Transaction{" "}
           <a
             href={explorerTxUrl(created.hash)}
@@ -282,7 +486,7 @@ export default function PostJob() {
       )}
 
       {recordError && (
-        <p role="alert" className="alert alert-error">
+        <p role="alert" aria-live="assertive" className="alert alert-error">
           On-chain escrow created, but the job record was not saved: {recordError}
         </p>
       )}

@@ -13,7 +13,8 @@
  *
  * Events handled (see docs/EVENTS.md):
  *   escrow     — created, funded, milestones_updated, milestone_released,
- *                dispute_opened, resolved, refunded
+ *                dispute_opened, resolved, refunded,
+ *                dispute_contract_updated (recognized; no job state to update)
  *   dispute    — raised, approved, dispute_resolved
  *   reputation — rated
  *
@@ -33,11 +34,10 @@
  *     `REFUNDED` and `RESOLVED` are the two terminal dispute states.
  *
  * Contributor Notes:
- * - `milestone_released` is emitted by both `release_milestone` and
- *   `release_partial`, and its `amount` is only what *that* call paid. The
- *   handler accumulates it on the milestone's `releasedAmount` and marks the
- *   milestone RELEASED only once the running total reaches its amount, so a
- *   partial payment no longer completes the job (issue #25).
+ * - Every recognised event is also stored verbatim in ChainEvent (issue #72) so
+ *   a per-user history and an escrow receipt can link to the transaction that
+ *   emitted it; the state handlers below are unaffected by that write, which is
+ *   best-effort.
  * - The cursor (last scanned ledger) is persisted in IndexerCursor, so the
  *   indexer resumes after a restart and does not reprocess applied ledgers.
  * - Unknown events are ignored; a failed event is logged and recorded in
@@ -48,21 +48,22 @@
  *   Re-run the affected event by hand once the bug is fixed, then delete the row.
  */
 
+import type { PrismaClient } from "@prisma/client";
 import { SorobanRpc } from "@stellar/stellar-sdk";
-import type { DisputeStatus, JobStatus, MilestoneStatus } from "@prisma/client";
+import type { DisputeStatus, JobStatus, NotificationType } from "@prisma/client";
 import { config } from "./config";
 import { prisma } from "./db";
-import { ASSETS, formatAmount, toBaseUnits } from "./lib/assets";
+import { checkConfiguredContractIds, type ContractIdName } from "./lib/contractFreshness";
 import {
   KNOWN_EVENTS,
-  decodeEventData,
   decodeEventFields,
   decodeEventName,
+  eventEscrowId,
   type ContractEventLike,
 } from "./lib/events";
 
 const CURSOR_ID = "main";
-const EVENT_PAGE_LIMIT = 100;
+export const EVENT_PAGE_LIMIT = 100;
 
 /** Longest error message persisted to IndexerDeadLetter.error. */
 const MAX_ERROR_LENGTH = 500;
@@ -88,14 +89,18 @@ const CONTRACT_IDS = [
   config.REPUTATION_CONTRACT_ID,
 ].filter(Boolean);
 
+/** The contracts the indexer is expected to follow, for a partial-config check. */
+const INDEXED_CONTRACTS: ContractIdName[] = ["escrow", "dispute", "reputation"];
+
 const rpcServer = new SorobanRpc.Server(config.SOROBAN_RPC_URL, { allowHttp: false });
 
 /** Minimal surface of `SorobanRpc.Server` the indexer needs (for testing). */
 export interface SorobanEventSource {
   getEvents(request: {
-    startLedger: number;
+    startLedger?: number;
     filters: SorobanRpc.Api.EventFilter[];
     limit?: number;
+    cursor?: string;
   }): Promise<{ events: ContractEventLike[]; latestLedger: number }>;
   /**
    * Chain tip, used to keep `startLedger` inside the RPC's retention window.
@@ -111,24 +116,42 @@ export interface CursorStore {
 }
 
 /**
- * A running indexer. `stop()` halts polling and drains the poll already in
- * flight, so a shutdown never cuts a cursor write in half (issue #26).
+ * The slice of Prisma the event handlers write through.
+ *
+ * Handlers receive this instead of closing over the module-level client, so a
+ * test can drive a whole event sequence against an in-memory fake and assert the
+ * resulting job / milestone / dispute rows without a database.
  */
-export interface IndexerHandle {
-  stop(): Promise<void>;
+export interface IndexerStore {
+  job: Pick<PrismaClient["job"], "findUnique" | "update" | "updateMany">;
+  milestone: Pick<PrismaClient["milestone"], "update" | "updateMany">;
+  dispute: Pick<PrismaClient["dispute"], "updateMany" | "upsert">;
+  /** Rating slice, shaped like `RatedStores` so `applyRatedEvent` accepts it. */
+  user: RatedStores["user"];
+  rating: RatedStores["rating"];
 }
 
-/**
- * Start the polling loop and hand back a handle that can stop it.
- *
- * The interval is no longer fire-and-forget: without the handle a SIGTERM left
- * it running until the process was killed, and two polls could overlap and race
- * on the same cursor.
- */
-export function startIndexer(): IndexerHandle {
+export function startIndexer() {
+  // Contract ids change on every deploy, so compare the configured ones with
+  // the last deploy record before doing anything else. Stale-but-non-empty ids
+  // used to leave the indexer polling the superseded contracts with no warning
+  // at all; this turns that silent misconfiguration into a loud log line.
+  checkConfiguredContractIds({
+    escrow: config.ESCROW_CONTRACT_ID,
+    dispute: config.DISPUTE_CONTRACT_ID,
+    reputation: config.REPUTATION_CONTRACT_ID,
+  });
+
   if (CONTRACT_IDS.length === 0) {
     console.warn("[indexer] No contract IDs configured — skipping.");
     return { stop: async () => {} };
+  }
+
+  if (CONTRACT_IDS.length < INDEXED_CONTRACTS.length) {
+    console.warn(
+      `[indexer] Only ${CONTRACT_IDS.length}/${INDEXED_CONTRACTS.length} contract IDs ` +
+        "configured — events from the unconfigured contract(s) will not be indexed.",
+    );
   }
 
   console.log("[indexer] Starting, polling every", config.INDEXER_POLL_INTERVAL_MS, "ms");
@@ -251,31 +274,60 @@ export async function processContractEvents(
     contractIds: [contractId],
   }));
 
-  const startLedger = await resolveStartLedger(source, lastLedger);
+  let currentStartLedger: number | undefined = await resolveStartLedger(source, lastLedger);
+  let currentCursor: string | undefined = undefined;
+  let maxLatestLedger = lastLedger;
 
-  const res = await source.getEvents({
-    startLedger,
-    filters,
-    limit: EVENT_PAGE_LIMIT,
-  });
+  while (true) {
+    const res = await source.getEvents({
+      ...(currentCursor ? { cursor: currentCursor } : { startLedger: currentStartLedger }),
+      filters,
+      limit: EVENT_PAGE_LIMIT,
+    });
 
-  for (const event of res.events) {
-    try {
-      await dispatch(event);
-    } catch (err) {
-      // One bad event must not block the rest of the batch.
-      console.error(`[indexer] failed to process event ${event.id ?? "?"}`, err);
-      // Recording the failure must never take the poller down with it.
+    maxLatestLedger = Math.max(maxLatestLedger, res.latestLedger);
+
+    for (const event of res.events) {
       try {
-        await onError(event, err);
-      } catch (storeErr) {
-        console.error("[indexer] could not record the failed event", storeErr);
+        await dispatch(event);
+      } catch (err) {
+        // One bad event must not block the rest of the batch.
+        console.error(`[indexer] failed to process event ${event.id ?? "?"}`, err);
+        // Recording the failure must never take the poller down with it.
+        try {
+          await onError(event, err);
+        } catch (storeErr) {
+          console.error("[indexer] could not record the failed event", storeErr);
+        }
       }
+    }
+
+    if (res.events.length < EVENT_PAGE_LIMIT) {
+      break;
+    }
+
+    const lastEvent = res.events[res.events.length - 1];
+    if (lastEvent?.id) {
+      if (lastEvent.id === currentCursor) {
+        // Cursor did not advance, break to avoid an infinite loop
+        break;
+      }
+      currentCursor = lastEvent.id;
+      currentStartLedger = undefined;
+    } else if (lastEvent?.ledger) {
+      const nextLedger = lastEvent.ledger + 1;
+      if (currentStartLedger !== undefined && nextLedger <= currentStartLedger) {
+        break;
+      }
+      currentStartLedger = nextLedger;
+      currentCursor = undefined;
+    } else {
+      break;
     }
   }
 
-  // Advance only after every event in the batch has been attempted.
-  const next = Math.max(lastLedger, res.latestLedger);
+  // Advance only after every event across all pages has been attempted.
+  const next = Math.max(lastLedger, maxLatestLedger);
   await cursor.set(next);
   return next;
 }
@@ -324,6 +376,21 @@ export async function recordDeadLetter(
 // ---------------------------------------------------------------------------
 
 /**
+ * Apply one decoded event to the database. Exported so tests can drive a
+ * sequence of events through the real handlers against a fake store.
+ */
+export async function dispatchEvent(
+  event: ContractEventLike,
+  store: IndexerStore = prisma,
+): Promise<void> {
+  const name = decodeEventName(event);
+  if (!name || !KNOWN_EVENTS.has(name)) return; // unknown events are ignored
+
+  const data = decodeEventData(event);
+  // The id lives in the data map for `created`/`funded` and in the `#[topic]`
+  // field for every other event (see lib/events.ts).
+  const escrowId = eventEscrowId(event);
+
  * Each event's `#[topic]` data fields, in `topic[1..]` order (docs/EVENTS.md).
  *
  * `created` and `funded` are deliberately absent: their topic is the client
@@ -352,34 +419,59 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
   if (!name || !KNOWN_EVENTS.has(name)) return; // unknown events are ignored
 
   const data = decodeEventFields(event, EVENT_TOPIC_FIELDS[name] ?? []);
+
+  // Record the event itself (issue #72). Best-effort: history is derived data,
+  // and a failure to store it must not stop the state mirror below from being
+  // updated — a dropped history row is recoverable by replaying the event,
+  // whereas a skipped state change is what the dead-letter table exists for.
+  try {
+    const row = buildChainEvent(event, name, data);
+    if (row) {
+      await prisma.chainEvent.upsert({ where: { id: row.id }, create: row, update: {} });
+    }
+  } catch (err) {
+    console.error(`[indexer] could not record event ${event.id ?? "?"} in the history`, err);
+  }
+
   switch (name) {
     case "created":
-      await handleCreated(data);
+      await handleCreated(escrowId, store);
       break;
     case "funded":
-      await handleFunded(data);
+      await handleFunded(escrowId, store);
+      break;
+    case "milestones_updated":
+      await handleMilestonesUpdated(escrowId, data, store);
       break;
     case "milestone_released":
-      await handleMilestoneReleased(data);
+      await handleMilestoneReleased(escrowId, data, store);
       break;
     case "dispute_opened":
+      await handleDisputeOpened(escrowId, store);
       await handleDisputeOpened(disputeStores(), data);
       break;
     case "resolved":
     case "dispute_resolved":
-      await handleResolved(data);
+      await handleResolved(escrowId, store);
       break;
     case "refunded":
+      await handleRefunded(escrowId, store);
+      break;
+    case "raised":
+      await handleRaised(escrowId, data, store);
       await handleRefunded(disputeStores(), data);
       break;
     case "raised":
       await handleRaised(disputeStores(), data);
       break;
     case "rated":
-      await handleRated(data);
+      await handleRated(escrowId, data, store);
       break;
     default:
-      // milestones_updated / approved do not change indexed job state.
+      // milestones_updated / approved / dispute_contract_updated do not
+      // change indexed job state — dispute_contract_updated is an admin
+      // contract-config rotation (audited on-chain via getEvents), and no
+      // Job row is affected by it.
       break;
   }
 }
@@ -400,77 +492,85 @@ function asAddress(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+async function notifyParticipants(
+  escrowId: bigint,
+  type: NotificationType,
+  title: string,
+  message: string,
+  jobStore?: { findUnique(args: { where: { escrowId: bigint } }): Promise<unknown> },
+): Promise<void> {
+  try {
+    const finder = jobStore ?? prisma.job;
+    const rawJob = await finder.findUnique({
+      where: { escrowId },
+    });
+    if (!rawJob || typeof rawJob !== "object") return;
+    const job = rawJob as { id: string; clientId?: string; freelancerId?: string | null };
+    const recipients = [job.clientId, job.freelancerId].filter((id): id is string => Boolean(id));
+    if (recipients.length === 0) return;
+    await Promise.all(
+      recipients.map((userId) =>
+        prisma.notification?.create({
+          data: {
+            userId,
+            jobId: job.id,
+            type,
+            title,
+            message,
+          },
+        }),
+      ),
+    );
+  } catch {
+    // Gracefully ignore notification failure if database is unavailable or mocked
+  }
+}
+
 async function handleCreated(data: Record<string, unknown>): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
-  await prisma.job.updateMany({ where: { escrowId }, data: { status: "CREATED" } });
+  await store.job.updateMany({ where: { escrowId }, data: { status: "CREATED" } });
 }
 
-async function handleFunded(data: Record<string, unknown>): Promise<void> {
-  const escrowId = asBigInt(data.escrow_id);
+async function handleFunded(escrowId: bigint | null, store: IndexerStore): Promise<void> {
   if (escrowId === null) return;
   await prisma.job.updateMany({ where: { escrowId }, data: { status: "ACTIVE" } });
+  await notifyParticipants(escrowId, "FUNDED", "Escrow Funded", "Escrow has been funded.");
 }
 
 /**
- * The slice of `prisma` the milestone-release handler reads and writes, kept
- * structural (like `DisputeLifecycleStores`) so a partial-then-full sequence can
- * be driven through the real handler against an in-memory store.
- */
-export interface MilestoneReleaseStores {
-  job: {
-    findUnique(args: {
-      where: { escrowId: bigint };
-      include: { milestones: true };
-    }): Promise<MilestoneReleaseJob | null>;
-    update(args: { where: { id: string }; data: { status: JobStatus } }): Promise<unknown>;
-  };
-  milestone: {
-    update(args: {
-      where: { id: string };
-      data: {
-        status?: MilestoneStatus;
-        releasedAt?: Date;
-        releasedAmount?: string;
-      };
-    }): Promise<unknown>;
-  };
-}
-
-/** The job row `handleMilestoneReleased` loads, milestones included. */
-export interface MilestoneReleaseJob {
-  id: string;
-  /** Asset symbol the job pays in — selects the decimal scale for the amounts. */
-  asset: string;
-  milestones: Array<{
-    id: string;
-    index: number;
-    status: MilestoneStatus;
-    /** Prisma `Decimal` at runtime; anything stringifiable works here. */
-    amountUsdc: { toString(): string } | string | number;
-    releasedAmount: { toString(): string } | string | number;
-  }>;
-}
-
-/**
- * A `milestone_released` event is emitted by *both* `release_milestone` and
- * `release_partial`, and its `amount` is the sum paid by *this* call — not the
- * milestone's total. Marking the milestone RELEASED on every event (the
- * behaviour before issue #25) records a half-paid milestone as done and
- * completes the job while the freelancer is still owed the remainder.
+ * `update_milestones` replaces the whole breakdown and emits only `count` and
+ * `total_amount` — no per-milestone amounts, so the indexer cannot rebuild the
+ * rows from the event alone. It *can* reconcile the total, which it does here;
+ * the rows themselves are written by the client through
+ * `PUT /api/escrow/:escrowId/milestones` once the transaction confirms.
  *
- * So the handler accumulates: each event's `amount` is added to the milestone's
- * `releasedAmount`, and the milestone only flips to RELEASED once the running
- * total reaches `amountUsdc`. Comparing the event's amount to the milestone
- * total instead would still be wrong for a partial-then-full sequence, because
- * `release_milestone` emits only the *remaining* amount after earlier partials.
- * The job completes only when every milestone is fully released.
+ * Applying the total here means the off-chain total cannot drift even if that
+ * follow-up call never happens.
  */
-export async function handleMilestoneReleased(
+async function handleMilestonesUpdated(
+  escrowId: bigint | null,
   data: Record<string, unknown>,
-  store: MilestoneReleaseStores = prisma as unknown as MilestoneReleaseStores,
+  store: IndexerStore,
 ): Promise<void> {
-  const escrowId = asBigInt(data.escrow_id);
+  const totalAmount = asBigInt(data.total_amount);
+  if (escrowId === null || totalAmount === null || totalAmount <= 0n) return;
+
+  const job = await store.job.findUnique({ where: { escrowId } });
+  if (!job) return;
+
+  const decimals = ASSETS[String(job.asset).toUpperCase()]?.decimals ?? 7;
+  await store.job.update({
+    where: { id: job.id },
+    data: { totalAmountUsdc: fromBaseUnits(totalAmount, decimals) },
+  });
+}
+
+async function handleMilestoneReleased(
+  escrowId: bigint | null,
+  data: Record<string, unknown>,
+  store: IndexerStore,
+): Promise<void> {
   const index = asNumber(data.index);
   if (escrowId === null || index === null) return;
 
@@ -482,17 +582,6 @@ export async function handleMilestoneReleased(
 
   const milestone = job.milestones.find((m) => m.index === index);
   if (!milestone) return;
-
-  // Amounts arrive as i128 base units; the milestone columns are decimals in
-  // the asset's human units. Convert both to base units (exact bigint math),
-  // then store the human-unit string back.
-  const decimals = ASSETS[job.asset.toUpperCase()]?.decimals ?? 7;
-  const milestoneTotal = toBaseUnits(String(milestone.amountUsdc), decimals);
-  const releasedSoFar =
-    toBaseUnits(String(milestone.releasedAmount ?? 0), decimals) + (asBigInt(data.amount) ?? 0n);
-
-  // A zero-amount milestone cannot be "released" by arithmetic; leave it alone.
-  const fullyReleased = milestoneTotal > 0n && releasedSoFar >= milestoneTotal;
 
   await store.milestone.update({
     where: { id: milestone.id },
@@ -515,8 +604,21 @@ export async function handleMilestoneReleased(
   if (allReleased) {
     await store.job.update({ where: { id: job.id }, data: { status: "COMPLETED" } });
   }
+
+  await notifyParticipants(
+    escrowId,
+    "RELEASED",
+    "Milestone Released",
+    `Milestone ${index + 1} for job "${job.title}" has been released.`,
+  );
 }
 
+async function handleDisputeOpened(
+  escrowId: bigint | null,
+  store: IndexerStore,
+): Promise<void> {
+  if (escrowId === null) return;
+  await store.job.updateMany({ where: { escrowId }, data: { status: "DISPUTED" } });
 // ---------------------------------------------------------------------------
 // Dispute lifecycle
 // ---------------------------------------------------------------------------
@@ -575,18 +677,64 @@ export async function handleDisputeOpened(
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
   await db.job.updateMany({ where: { escrowId }, data: { status: "DISPUTED" } });
+  await notifyParticipants(
+    escrowId,
+    "DISPUTED",
+    "Dispute Opened",
+    "A dispute has been opened for the job.",
+    db.job,
+  );
 }
 
-async function handleResolved(data: Record<string, unknown>): Promise<void> {
-  const escrowId = asBigInt(data.escrow_id);
+/**
+ * `escrow.resolve` pays out every milestone and marks the escrow Completed in
+ * one transaction, publishing only `resolved`. There are no per-milestone
+ * `milestone_released` events for that payout, so the milestones have to be
+ * settled here: otherwise an arbitrated job is COMPLETED while all of its
+ * milestones stay PENDING with `releasedAt: null` forever, and every
+ * milestone-derived view (progress, unreleased amount, earnings) is wrong for
+ * the one case where the database is furthest from the chain.
+ *
+ * `releasedAt` is the same instant for the job, the dispute and the milestones,
+ * because the contract changes them all in a single transaction.
+ */
+async function handleResolved(
+  escrowId: bigint | null,
+  store: IndexerStore,
+): Promise<void> {
   if (escrowId === null) return;
-  await prisma.job.updateMany({ where: { escrowId }, data: { status: "COMPLETED" } });
-  await prisma.dispute.updateMany({
+
+  const resolvedAt = new Date();
+  await store.job.updateMany({ where: { escrowId }, data: { status: "COMPLETED" } });
+  await store.dispute.updateMany({
     where: { job: { escrowId } },
-    data: { status: "RESOLVED", resolvedAt: new Date() },
+    data: { status: "RESOLVED", resolvedAt },
   });
+  await store.milestone.updateMany({
+    where: { job: { escrowId } },
+    data: { status: "RELEASED", releasedAt: resolvedAt },
+  });
+  await notifyParticipants(escrowId, "RESOLVED", "Dispute Resolved", "The dispute has been resolved.");
 }
 
+async function handleRefunded(escrowId: bigint | null, store: IndexerStore): Promise<void> {
+  if (escrowId === null) return;
+  await store.job.updateMany({ where: { escrowId }, data: { status: "REFUNDED" } });
+}
+
+async function handleRaised(
+  escrowId: bigint | null,
+  data: Record<string, unknown>,
+  store: IndexerStore,
+): Promise<void> {
+  const disputeId = asBigInt(data.dispute_id);
+  if (escrowId === null || disputeId === null) return;
+
+  const job = await store.job.findUnique({ where: { escrowId } });
+  if (!job) return;
+
+  await store.dispute.upsert({
+    where: { onChainId: disputeId },
 /**
  * `refunded` is emitted by both `reclaim_expired` (Active → Refunded) and
  * `reclaim_after_dispute_timeout` (Disputed → Refunded).
@@ -699,8 +847,7 @@ interface RatedEvent {
   score: number;
 }
 
-function parseRatedEvent(data: Record<string, unknown>): RatedEvent | null {
-  const escrowId = asBigInt(data.escrow_id);
+function parseRatedEvent(escrowId: bigint, data: Record<string, unknown>): RatedEvent | null {
   const rater = asAddress(data.rater);
   const ratee = asAddress(data.ratee);
   const score = asNumber(data.score);
@@ -727,12 +874,16 @@ export type RatedOutcome =
  * A rating event whose escrow has no off-chain Job row is skipped: `Rating.jobId`
  * is required, and inventing a job from a rating would put fabricated data in
  * the listing. The event is logged so it can be reconciled by hand.
+ *
+ * `escrowId` is the event's `#[topic]` field, which is why it is passed in
+ * rather than read from the data map — see `eventEscrowId` in lib/events.ts.
  */
 export async function applyRatedEvent(
   db: RatedStores,
+  escrowId: bigint,
   data: Record<string, unknown>,
 ): Promise<RatedOutcome> {
-  const event = parseRatedEvent(data);
+  const event = parseRatedEvent(escrowId, data);
   if (!event) return { status: "skipped", reason: "malformed" };
 
   const job = await db.job.findUnique({ where: { escrowId: event.escrowId } });
@@ -768,8 +919,16 @@ export async function applyRatedEvent(
   return { status: "applied", jobId: job.id, score: event.score };
 }
 
-async function handleRated(data: Record<string, unknown>): Promise<void> {
-  const outcome = await applyRatedEvent(prisma as unknown as RatedStores, data);
+async function handleRated(
+  escrowId: bigint | null,
+  data: Record<string, unknown>,
+  store: IndexerStore,
+): Promise<void> {
+  // `escrow_id` is the event's #[topic] field, so it is not in the data map;
+  // without it the rating cannot be matched to a job.
+  if (escrowId === null) return;
+
+  const outcome = await applyRatedEvent(store as unknown as RatedStores, escrowId, data);
 
   if (outcome.status === "applied") {
     console.log("[indexer] rated job", outcome.jobId, "score", outcome.score);
@@ -778,7 +937,7 @@ async function handleRated(data: Record<string, unknown>): Promise<void> {
 
   if (outcome.reason === "unknown-job") {
     console.warn(
-      `[indexer] rated event for escrow ${String(data.escrow_id)} has no job record; ` +
+      `[indexer] rated event for escrow ${escrowId} has no job record; ` +
         "the rating cannot be stored until the job exists (see POST /api/escrow/sync/:jobId).",
     );
     return;

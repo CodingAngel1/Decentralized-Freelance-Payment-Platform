@@ -5,11 +5,14 @@ import {
   decodeEventData,
   decodeEventFields,
   decodeEventName,
+  eventEscrowId,
   type ContractEventLike,
 } from "../lib/events";
 import {
+  EVENT_PAGE_LIMIT,
   EVENT_TOPIC_FIELDS,
   applyRatedEvent,
+  buildChainEvent,
   handleDisputeOpened,
   handleMilestoneReleased,
   handleRaised,
@@ -56,11 +59,31 @@ function eventFields(event: ContractEventLike): Record<string, unknown> {
 }
 
 /**
+ * An event shaped the way the contracts publish one for their `#[topic]` field:
+ * the escrow id is `topic[1]`, not part of the data map.
+ */
+function makeTopicEvent(
+  name: string,
+  escrowId: bigint,
+  data: Record<string, xdr.ScVal> = {},
+  ledger = 10,
+): ContractEventLike {
+  return {
+    id: `evt-${ledger}`,
+    ledger,
+    topic: [xdr.ScVal.scvSymbol(name), nativeToScVal(escrowId, { type: "u64" })],
+    value: mapVal(data),
+  };
+}
+
+/**
  * Arbitrary fixture id — these tests never touch a chain, so it is deliberately
  * not a deployed contract. Live testnet ids live in deployments/testnet.json;
  * do not copy one in here, or this file starts looking like configuration.
  */
 const CONTRACT = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+
+const ALICE = "GBPLJHDI6RPLS4EEJJTM7EVEV3UNTXLFAACWA63QSTHGLWH5RO3LQ75B";
 
 describe("event decoding", () => {
   it("decodes a captured milestone_released event", () => {
@@ -145,6 +168,99 @@ describe("event decoding", () => {
   });
 });
 
+describe("chain event history (#72)", () => {
+  /** An event as RPC returns it, including the transaction metadata. */
+  function withMeta(
+    event: ContractEventLike,
+    txHash: string,
+    ledgerClosedAt: string,
+  ): ContractEventLike {
+    return { ...event, txHash, ledgerClosedAt };
+  }
+
+  it("records the escrow, action, moved amount and transaction hash", () => {
+    const event = withMeta(
+      makeEvent(
+        "milestone_released",
+        {
+          escrow_id: nativeToScVal(7n, { type: "u64" }),
+          index: nativeToScVal(0, { type: "u32" }),
+          amount: nativeToScVal(3_000_000n, { type: "i128" }),
+        },
+        42,
+        [nativeToScVal(7n, { type: "u64" })],
+      ),
+      "abc123",
+      "2026-01-02T03:04:05.000Z",
+    );
+
+    const row = buildChainEvent(event, "milestone_released", eventFields(event));
+
+    expect(row).toMatchObject({
+      // The RPC id, so a replayed event upserts the same row.
+      id: "evt-42",
+      escrowId: 7n,
+      action: "milestone_released",
+      // Base units, exactly as the contract emitted them.
+      amount: "3000000",
+      txHash: "abc123",
+      ledger: 42,
+    });
+    expect(row?.createdAt.toISOString()).toBe("2026-01-02T03:04:05.000Z");
+  });
+
+  it("sums the two shares a resolution distributed", () => {
+    const event = makeEvent("resolved", {
+      escrow_id: nativeToScVal(7n, { type: "u64" }),
+      client_share: nativeToScVal(500_000n, { type: "i128" }),
+      freelancer_share: nativeToScVal(1_500_000n, { type: "i128" }),
+    });
+
+    expect(buildChainEvent(event, "resolved", eventFields(event))?.amount).toBe("2000000");
+  });
+
+  it("stores no amount for events that report a total rather than move funds", () => {
+    // `created` carries the escrow total, which has not moved; showing it as an
+    // amount would be misleading next to `funded`.
+    const created = makeEvent("created", {
+      escrow_id: nativeToScVal(7n, { type: "u64" }),
+      total_amount: nativeToScVal(9_000_000n, { type: "i128" }),
+    });
+
+    expect(buildChainEvent(created, "created", eventFields(created))?.amount).toBeNull();
+  });
+
+  it("skips an event that belongs to no escrow", () => {
+    // `approved` carries a dispute id in its topic and no escrow id, so there is
+    // nothing to attach the row to.
+    const approved = makeEvent(
+      "approved",
+      { arbitrator: Address.fromString(Keypair.random().publicKey()).toScVal() },
+      10,
+      [nativeToScVal(3n, { type: "u64" })],
+    );
+
+    expect(buildChainEvent(approved, "approved", eventFields(approved))).toBeNull();
+  });
+
+  it("composes a key for an event RPC gave no id, so a replayed batch is stable", () => {
+    const event: ContractEventLike = {
+      ledger: 5,
+      topic: [xdr.ScVal.scvSymbol("funded"), nativeToScVal(7n, { type: "u64" })],
+      value: mapVal({
+        escrow_id: nativeToScVal(7n, { type: "u64" }),
+        amount: nativeToScVal(1n, { type: "i128" }),
+      }),
+    };
+
+    const first = buildChainEvent(event, "funded", eventFields(event));
+    const second = buildChainEvent(event, "funded", eventFields(event));
+
+    expect(first?.id).toBe("5-funded-7");
+    expect(second?.id).toBe(first?.id);
+  });
+});
+
 describe("processContractEvents", () => {
   it("advances the cursor only after every event has been processed", async () => {
     const order: string[] = [];
@@ -187,6 +303,148 @@ describe("processContractEvents", () => {
     expect(order[0]).toBe("getEvents");
     expect(order[order.length - 1]).toBe("set:12");
   });
+
+  it("paginates through multiple pages before advancing the cursor to the tip", async () => {
+    const page1Events: ContractEventLike[] = Array.from({ length: EVENT_PAGE_LIMIT }, (_, i) => ({
+      id: `evt-page1-${i}`,
+      ledger: 10 + Math.floor(i / 20),
+      topic: [xdr.ScVal.scvSymbol("funded")],
+      value: mapVal({ escrow_id: nativeToScVal(BigInt(i), { type: "u64" }) }),
+    }));
+    const page2Events: ContractEventLike[] = Array.from({ length: 35 }, (_, i) => ({
+      id: `evt-page2-${i}`,
+      ledger: 15 + Math.floor(i / 20),
+      topic: [xdr.ScVal.scvSymbol("funded")],
+      value: mapVal({ escrow_id: nativeToScVal(BigInt(100 + i), { type: "u64" }) }),
+    }));
+
+    const requests: unknown[] = [];
+    const source = {
+      getEvents: vi.fn(async (req) => {
+        requests.push(req);
+        if (requests.length === 1) {
+          return { events: page1Events, latestLedger: 20 };
+        }
+        return { events: page2Events, latestLedger: 20 };
+      }),
+    };
+
+    let cursorValue = 5;
+    const cursorOrder: string[] = [];
+    const cursor = {
+      get: async () => cursorValue,
+      set: async (ledger: number) => {
+        cursorOrder.push(`set:${ledger}`);
+        cursorValue = ledger;
+      },
+    };
+
+    const dispatched: string[] = [];
+    const dispatch = vi.fn(async (event: ContractEventLike) => {
+      dispatched.push(event.id!);
+    });
+
+    const next = await processContractEvents(source, cursor, [CONTRACT], dispatch);
+
+    // Two pages fetched
+    expect(source.getEvents).toHaveBeenCalledTimes(2);
+    // First call uses startLedger
+    expect(requests[0]).toMatchObject({ startLedger: 6, limit: EVENT_PAGE_LIMIT });
+    // Second call uses pagination cursor from the last event of page 1
+    expect(requests[1]).toMatchObject({
+      cursor: `evt-page1-${EVENT_PAGE_LIMIT - 1}`,
+      limit: EVENT_PAGE_LIMIT,
+    });
+
+    // All 135 events dispatched in exact order
+    expect(dispatched).toHaveLength(EVENT_PAGE_LIMIT + 35);
+    expect(dispatched[0]).toBe("evt-page1-0");
+    expect(dispatched[EVENT_PAGE_LIMIT - 1]).toBe(`evt-page1-${EVENT_PAGE_LIMIT - 1}`);
+    expect(dispatched[EVENT_PAGE_LIMIT]).toBe("evt-page2-0");
+    expect(dispatched[EVENT_PAGE_LIMIT + 34]).toBe("evt-page2-34");
+
+    // Cursor is only advanced ONCE, at the very end
+    expect(cursorOrder).toEqual(["set:20"]);
+    expect(cursorValue).toBe(20);
+    expect(next).toBe(20);
+  });
+
+  it("handles pagination when event count is an exact multiple of page limit", async () => {
+    const page1Events: ContractEventLike[] = Array.from({ length: EVENT_PAGE_LIMIT }, (_, i) => ({
+      id: `evt-exact-${i}`,
+      ledger: 10,
+      topic: [xdr.ScVal.scvSymbol("funded")],
+      value: mapVal({ escrow_id: nativeToScVal(BigInt(i), { type: "u64" }) }),
+    }));
+
+    const source = {
+      getEvents: vi
+        .fn()
+        .mockResolvedValueOnce({ events: page1Events, latestLedger: 15 })
+        .mockResolvedValueOnce({ events: [], latestLedger: 15 }),
+    };
+
+    let cursorValue = 5;
+    const cursor = {
+      get: async () => cursorValue,
+      set: async (ledger: number) => {
+        cursorValue = ledger;
+      },
+    };
+
+    const dispatch = vi.fn();
+    const next = await processContractEvents(source, cursor, [CONTRACT], dispatch);
+
+    expect(source.getEvents).toHaveBeenCalledTimes(2);
+    expect(dispatch).toHaveBeenCalledTimes(EVENT_PAGE_LIMIT);
+    expect(cursorValue).toBe(15);
+    expect(next).toBe(15);
+  });
+
+  it("advances startLedger across pages when events omit id", async () => {
+    const page1Events: ContractEventLike[] = Array.from({ length: EVENT_PAGE_LIMIT }, (_, i) => ({
+      ledger: 10,
+      topic: [xdr.ScVal.scvSymbol("funded")],
+      value: mapVal({ escrow_id: nativeToScVal(BigInt(i), { type: "u64" }) }),
+    }));
+    const page2Events: ContractEventLike[] = [
+      {
+        ledger: 11,
+        topic: [xdr.ScVal.scvSymbol("funded")],
+        value: mapVal({ escrow_id: nativeToScVal(1n, { type: "u64" }) }),
+      },
+    ];
+
+    const requests: unknown[] = [];
+    const source = {
+      getEvents: vi.fn(async (req) => {
+        requests.push(req);
+        if (requests.length === 1) {
+          return { events: page1Events, latestLedger: 12 };
+        }
+        return { events: page2Events, latestLedger: 12 };
+      }),
+    };
+
+    let cursorValue = 5;
+    const cursor = {
+      get: async () => cursorValue,
+      set: async (ledger: number) => {
+        cursorValue = ledger;
+      },
+    };
+
+    const dispatch = vi.fn();
+    const next = await processContractEvents(source, cursor, [CONTRACT], dispatch);
+
+    expect(source.getEvents).toHaveBeenCalledTimes(2);
+    expect(requests[0]).toMatchObject({ startLedger: 6 });
+    expect(requests[1]).toMatchObject({ startLedger: 11 });
+    expect(dispatch).toHaveBeenCalledTimes(EVENT_PAGE_LIMIT + 1);
+    expect(cursorValue).toBe(12);
+    expect(next).toBe(12);
+  });
+
 
   it("starts a fresh indexer inside the RPC's ledger window", async () => {
     // Ledger 1 is far outside what Soroban RPC retains, so a fresh cursor has to
@@ -409,11 +667,13 @@ describe("rated events", () => {
   const RATER = Keypair.random().publicKey();
   const RATEE = Keypair.random().publicKey();
 
-  /** The decoded payload of a `rated` event, as RPC would return it. */
+  /**
+   * The decoded payload of a `rated` event, as RPC would return it: the escrow
+   * id is the `#[topic]` field, so it is *not* in the data map.
+   */
   function ratedData(overrides: Record<string, xdr.ScVal> = {}) {
     return decodeEventData(
-      makeEvent("rated", {
-        escrow_id: nativeToScVal(7n, { type: "u64" }),
+      makeTopicEvent("rated", 7n, {
         rater: Address.fromString(RATER).toScVal(),
         ratee: Address.fromString(RATEE).toScVal(),
         score: nativeToScVal(4, { type: "u32" }),
@@ -428,7 +688,7 @@ describe("rated events", () => {
     const db = new FakeRatedStore();
     db.jobs.push({ id: "job-1", escrowId: 7n });
 
-    const outcome = await applyRatedEvent(db, ratedData());
+    const outcome = await applyRatedEvent(db, 7n, ratedData());
 
     expect(outcome).toEqual({ status: "applied", jobId: "job-1", score: 4 });
     expect(db.ratings.size).toBe(1);
@@ -446,7 +706,7 @@ describe("rated events", () => {
     // The API wrote the row (with a placeholder score) before the tx landed.
     db.seedRating({ jobId: "job-1", raterId: rater.id, rateeId: ratee.id, score: 1 });
 
-    await applyRatedEvent(db, ratedData());
+    await applyRatedEvent(db, 7n, ratedData());
 
     expect(db.ratings.size).toBe(1);
     // The on-chain score wins — updated in place, not inserted twice.
@@ -456,7 +716,7 @@ describe("rated events", () => {
   it("skips a rated event for an escrow that has no job record", async () => {
     const db = new FakeRatedStore();
 
-    const outcome = await applyRatedEvent(db, ratedData());
+    const outcome = await applyRatedEvent(db, 7n, ratedData());
 
     expect(outcome).toEqual({ status: "skipped", reason: "unknown-job" });
     expect(db.ratings.size).toBe(0);
@@ -466,13 +726,409 @@ describe("rated events", () => {
   it("skips a malformed rated event without throwing", async () => {
     const db = new FakeRatedStore();
 
-    const outcome = await applyRatedEvent(db, { escrow_id: "not-a-number" });
+    const outcome = await applyRatedEvent(db, 7n, {});
 
     expect(outcome).toEqual({ status: "skipped", reason: "malformed" });
     expect(db.ratings.size).toBe(0);
   });
 });
 
+// ---------------------------------------------------------------------------
+// Applying events to the database
+// ---------------------------------------------------------------------------
+
+interface FakeMilestone {
+  id: string;
+  index: number;
+  status: "PENDING" | "RELEASED";
+  releasedAt: Date | null;
+}
+
+interface FakeDispute {
+  onChainId: bigint | null;
+  jobId: string;
+  raisedByAddress: string;
+  reason: string;
+  status: "RAISED" | "RESOLVED";
+  resolvedAt: Date | null;
+}
+
+interface FakeJob {
+  id: string;
+  escrowId: bigint;
+  asset: string;
+  status: string;
+  totalAmountUsdc: string;
+  milestones: FakeMilestone[];
+  disputes: FakeDispute[];
+}
+
+function fakeJob(overrides: Partial<FakeJob> = {}): FakeJob {
+  return {
+    id: "job_1",
+    escrowId: 7n,
+    asset: "USDC",
+    status: "CREATED",
+    totalAmountUsdc: "1",
+    milestones: [
+      { id: "m0", index: 0, status: "PENDING", releasedAt: null },
+      { id: "m1", index: 1, status: "PENDING", releasedAt: null },
+    ],
+    disputes: [],
+    ...overrides,
+  };
+}
+
+/** The `where` clauses the handlers actually use. */
+type FakeWhere = { escrowId?: bigint | null; id?: string; job?: { escrowId: bigint | null } };
+
+interface FakeRatingRow {
+  jobId: string;
+  raterId: string;
+  rateeId: string;
+  score: number;
+}
+
+/**
+ * In-memory stand-in for the slice of Prisma the handlers write through, so a
+ * test can run a real event sequence and assert the rows it produces. Only the
+ * access patterns the handlers use are implemented: `id`/`escrowId` lookups, the
+ * `job: { escrowId }` relation filter, the dispute upsert, and the rating
+ * upsert keyed by `(rater, job)`. Rating rows land in `ratings` so a test can
+ * assert them. The cast at the end hides Prisma's own promise type, which the
+ * fake has no need to reproduce.
+ */
+function makeStore(jobs: FakeJob[], ratings: FakeRatingRow[] = []): IndexerStore {
+  const byId = (id: string) => jobs.find((job) => job.id === id);
+  const byEscrow = (escrowId: bigint | null) => jobs.filter((job) => job.escrowId === escrowId);
+  const related = <T>(where: FakeWhere, pick: (job: FakeJob) => T[]): T[] =>
+    byEscrow(where.job?.escrowId ?? null).flatMap(pick);
+
+  return {
+    job: {
+      findUnique: async ({ where, include }: { where: FakeWhere; include?: { milestones?: boolean } }) => {
+        const job = where.id ? byId(where.id) : byEscrow(where.escrowId ?? null)[0];
+        if (!job) return null;
+        return include?.milestones ? job : { ...job, milestones: undefined };
+      },
+      update: async ({ where, data }: { where: FakeWhere; data: Partial<FakeJob> }) => {
+        const job = byId(where.id as string);
+        if (!job) throw new Error(`no job ${where.id}`);
+        Object.assign(job, data);
+        return job;
+      },
+      updateMany: async ({ where, data }: { where: FakeWhere; data: Partial<FakeJob> }) => {
+        const matched = byEscrow(where.escrowId ?? null);
+        for (const job of matched) Object.assign(job, data);
+        return { count: matched.length };
+      },
+    },
+    milestone: {
+      update: async ({ where, data }: { where: FakeWhere; data: Partial<FakeMilestone> }) => {
+        const milestone = jobs
+          .flatMap((job) => job.milestones)
+          .find((m) => m.id === where.id);
+        if (!milestone) throw new Error(`no milestone ${where.id}`);
+        Object.assign(milestone, data);
+        return milestone;
+      },
+      updateMany: async ({ where, data }: { where: FakeWhere; data: Partial<FakeMilestone> }) => {
+        const matched = related(where, (job) => job.milestones);
+        for (const milestone of matched) Object.assign(milestone, data);
+        return { count: matched.length };
+      },
+    },
+    dispute: {
+      updateMany: async ({ where, data }: { where: FakeWhere; data: Partial<FakeDispute> }) => {
+        const matched = related(where, (job) => job.disputes);
+        for (const dispute of matched) Object.assign(dispute, data);
+        return { count: matched.length };
+      },
+      upsert: async ({
+        where,
+        create,
+      }: {
+        where: { onChainId: bigint };
+        create: Partial<FakeDispute> & { jobId: string };
+      }) => {
+        const existing = jobs
+          .flatMap((job) => job.disputes)
+          .find((dispute) => dispute.onChainId === where.onChainId);
+        if (existing) return existing;
+        const job = byId(create.jobId);
+        if (!job) throw new Error(`no job ${create.jobId}`);
+        const created: FakeDispute = {
+          onChainId: create.onChainId ?? null,
+          jobId: create.jobId,
+          raisedByAddress: create.raisedByAddress ?? "",
+          reason: create.reason ?? "",
+          status: create.status ?? "RAISED",
+          resolvedAt: create.resolvedAt ?? null,
+        };
+        job.disputes.push(created);
+        return created;
+      },
+    },
+    user: {
+      upsert: async ({ where }: { where: { stellarAddress: string } }) => ({
+        id: `user_${where.stellarAddress}`,
+      }),
+    },
+    rating: {
+      upsert: async ({
+        where,
+        create,
+        update,
+      }: {
+        where: { raterId_jobId: { raterId: string; jobId: string } };
+        create: FakeRatingRow;
+        update: { rateeId: string; score: number };
+      }) => {
+        const existing = ratings.find(
+          (row) =>
+            row.raterId === where.raterId_jobId.raterId &&
+            row.jobId === where.raterId_jobId.jobId,
+        );
+        if (existing) Object.assign(existing, update);
+        else ratings.push({ ...create });
+        return {};
+      },
+    },
+  } as unknown as IndexerStore;
+}
+
+describe("dispatchEvent", () => {
+  it("moves the job to ACTIVE on funded, whose id is in the data map", async () => {
+    const jobs = [fakeJob()];
+
+    await dispatchEvent(
+      makeEvent("funded", { escrow_id: nativeToScVal(7n, { type: "u64" }) }),
+      makeStore(jobs),
+    );
+
+    expect(jobs[0].status).toBe("ACTIVE");
+  });
+
+  it("releases a milestone whose escrow id is only in the event topic", async () => {
+    const jobs = [fakeJob({ status: "ACTIVE" })];
+
+    await dispatchEvent(
+      makeTopicEvent("milestone_released", 7n, { index: nativeToScVal(0, { type: "u32" }) }),
+      makeStore(jobs),
+    );
+
+    expect(jobs[0].milestones[0].status).toBe("RELEASED");
+    expect(jobs[0].milestones[0].releasedAt).toBeInstanceOf(Date);
+    // The other milestone is still pending, so the job is not done yet.
+    expect(jobs[0].milestones[1].status).toBe("PENDING");
+    expect(jobs[0].status).toBe("ACTIVE");
+  });
+
+  it("completes the job once the last milestone is released", async () => {
+    const jobs = [fakeJob({ status: "ACTIVE" })];
+    const store = makeStore(jobs);
+
+    for (const index of [0, 1]) {
+      await dispatchEvent(
+        makeTopicEvent("milestone_released", 7n, { index: nativeToScVal(index, { type: "u32" }) }),
+        store,
+      );
+    }
+
+    expect(jobs[0].milestones.map((m) => m.status)).toEqual(["RELEASED", "RELEASED"]);
+    expect(jobs[0].status).toBe("COMPLETED");
+  });
+
+  it("marks the job DISPUTED when a dispute is opened", async () => {
+    const jobs = [fakeJob({ status: "ACTIVE" })];
+
+    await dispatchEvent(makeTopicEvent("dispute_opened", 7n), makeStore(jobs));
+
+    expect(jobs[0].status).toBe("DISPUTED");
+  });
+
+  it("settles the milestones too when the escrow is resolved", async () => {
+    // `escrow.resolve` pays out in one transaction and emits only `resolved`,
+    // so no per-milestone events follow. Left unhandled, an arbitrated job
+    // would be COMPLETED while its milestones stayed PENDING forever.
+    const jobs = [
+      fakeJob({
+        status: "DISPUTED",
+        disputes: [
+          {
+            onChainId: 3n,
+            jobId: "job_1",
+            raisedByAddress: ALICE,
+            reason: "",
+            status: "RAISED",
+            resolvedAt: null,
+          },
+        ],
+      }),
+    ];
+
+    await dispatchEvent(
+      makeTopicEvent("resolved", 7n, {
+        client_share: nativeToScVal(0n, { type: "i128" }),
+        freelancer_share: nativeToScVal(20_000_000n, { type: "i128" }),
+      }),
+      makeStore(jobs),
+    );
+
+    expect(jobs[0].status).toBe("COMPLETED");
+    expect(jobs[0].disputes[0]).toMatchObject({ status: "RESOLVED" });
+    expect(jobs[0].milestones.map((m) => m.status)).toEqual(["RELEASED", "RELEASED"]);
+    // One transaction on-chain, so one instant off-chain.
+    expect(jobs[0].milestones.map((m) => m.releasedAt)).toEqual([
+      jobs[0].disputes[0].resolvedAt,
+      jobs[0].disputes[0].resolvedAt,
+    ]);
+    expect(jobs[0].disputes[0].resolvedAt).toBeInstanceOf(Date);
+  });
+
+  it("treats dispute_resolved like resolved", async () => {
+    const jobs = [fakeJob({ status: "DISPUTED" })];
+
+    await dispatchEvent(makeTopicEvent("dispute_resolved", 7n), makeStore(jobs));
+
+    expect(jobs[0].status).toBe("COMPLETED");
+    expect(jobs[0].milestones[0].status).toBe("RELEASED");
+  });
+
+  it("refunds the job, leaving the milestones untouched", async () => {
+    const jobs = [fakeJob({ status: "ACTIVE" })];
+
+    await dispatchEvent(makeTopicEvent("refunded", 7n), makeStore(jobs));
+
+    expect(jobs[0].status).toBe("REFUNDED");
+    expect(jobs[0].milestones[0].status).toBe("PENDING");
+  });
+
+  it("reconciles the total from milestones_updated without rebuilding the rows", async () => {
+    // The event carries only count/total_amount, so the per-milestone rows stay
+    // as the API wrote them; the total cannot drift even if `PUT /milestones`
+    // never follows.
+    const jobs = [fakeJob({ asset: "XLM", totalAmountUsdc: "1" })];
+
+    await dispatchEvent(
+      makeTopicEvent("milestones_updated", 7n, {
+        count: nativeToScVal(2, { type: "u32" }),
+        total_amount: nativeToScVal(25_000_000n, { type: "i128" }),
+      }),
+      makeStore(jobs),
+    );
+
+    expect(jobs[0].totalAmountUsdc).toBe("2.5");
+    expect(jobs[0].milestones.map((m) => m.id)).toEqual(["m0", "m1"]);
+  });
+
+  it("ignores a milestones_updated total of zero", async () => {
+    const jobs = [fakeJob({ totalAmountUsdc: "1" })];
+
+    await dispatchEvent(
+      makeTopicEvent("milestones_updated", 7n, {
+        count: nativeToScVal(0, { type: "u32" }),
+        total_amount: nativeToScVal(0n, { type: "i128" }),
+      }),
+      makeStore(jobs),
+    );
+
+    expect(jobs[0].totalAmountUsdc).toBe("1");
+  });
+
+  it("records a raised dispute once, even when the event is replayed", async () => {
+    const jobs = [fakeJob()];
+    const store = makeStore(jobs);
+    const event = makeTopicEvent("raised", 7n, {
+      dispute_id: nativeToScVal(3n, { type: "u64" }),
+      raised_by: Address.fromString(ALICE).toScVal(),
+    });
+
+    await dispatchEvent(event, store);
+    await dispatchEvent(event, store);
+
+    expect(jobs[0].disputes).toEqual([
+      {
+        onChainId: 3n,
+        jobId: "job_1",
+        raisedByAddress: ALICE,
+        reason: "",
+        status: "RAISED",
+        resolvedAt: null,
+      },
+    ]);
+  });
+
+  it("writes nothing for an event it cannot attribute to an escrow", async () => {
+    const jobs = [fakeJob()];
+    const before = structuredClone(jobs);
+
+    await dispatchEvent(
+      makeEvent("milestone_released", { index: nativeToScVal(0, { type: "u32" }) }),
+      makeStore(jobs),
+    );
+
+    expect(jobs).toEqual(before);
+  });
+
+  it("ignores an event name it does not know", async () => {
+    const jobs = [fakeJob()];
+    const before = structuredClone(jobs);
+
+    await dispatchEvent(makeTopicEvent("something_new", 7n), makeStore(jobs));
+
+    expect(jobs).toEqual(before);
+  });
+
+  it("stores a rating whose escrow id is only in the event topic", async () => {
+    // `rated` carries escrow_id as its #[topic] field. Reading it from the data
+    // map instead made every real rating event look malformed, so ratings made
+    // with `stellar contract invoke` never reached the database.
+    const rater = Keypair.random().publicKey();
+    const ratee = Keypair.random().publicKey();
+    const ratings: FakeRatingRow[] = [];
+
+    await dispatchEvent(
+      makeTopicEvent("rated", 7n, {
+        rater: Address.fromString(rater).toScVal(),
+        ratee: Address.fromString(ratee).toScVal(),
+        score: nativeToScVal(4, { type: "u32" }),
+      }),
+      makeStore([fakeJob()], ratings),
+    );
+
+    expect(ratings).toEqual([
+      {
+        jobId: "job_1",
+        raterId: `user_${rater}`,
+        rateeId: `user_${ratee}`,
+        score: 4,
+      },
+    ]);
+  });
+
+  it("ignores a rated event with no escrow id", async () => {
+    const ratings: FakeRatingRow[] = [];
+
+    await dispatchEvent(
+      makeEvent("rated", {
+        rater: Address.fromString(Keypair.random().publicKey()).toScVal(),
+        ratee: Address.fromString(Keypair.random().publicKey()).toScVal(),
+        score: nativeToScVal(4, { type: "u32" }),
+      }),
+      makeStore([fakeJob()], ratings),
+    );
+
+    expect(ratings).toEqual([]);
+  });
+
+  it("leaves an event for an unknown escrow alone", async () => {
+    const jobs = [fakeJob()];
+    const before = structuredClone(jobs);
+
+    await dispatchEvent(makeTopicEvent("refunded", 999n), makeStore(jobs));
+
+    expect(jobs).toEqual(before);
 /**
  * In-memory stand-in for the store the dispute-lifecycle handlers write through,
  * so `dispute_opened → raised → refunded` can be driven end to end without a

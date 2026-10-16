@@ -1,28 +1,48 @@
 name: CI
 
+# Every job here only reads the repository: checkout, toolchains, npm/cargo,
+# cache. Scope the token to that and nothing more (issue #111); if a step ever
+# needs more, widen it in that job's `permissions:` block — restating
+# `contents: read`, because a job-level block replaces this one. Enforced by
+# backend/src/__tests__/ciWorkflows.test.ts; conventions in CONTRIBUTING.md →
+# CI workflows.
+permissions:
+  contents: read
+
 on:
   push:
-    branches: [main]
+    # `integration/staging` is where contribution PRs are integrated before
+    # `main`; without it here, CI would never run on those pull requests.
+    branches: [main, integration/staging]
   pull_request:
-    branches: [main]
+    branches: [main, integration/staging]
 
 jobs:
   contracts:
     name: Contracts – fmt, clippy, test, wasm
     runs-on: ubuntu-latest
+    # Job-level block, so `contents: read` is restated. `attestations: read`
+    # is what the stellar-cli action's `gh attestation verify` step needs to
+    # fetch the release attestation with the workflow token (issue #111).
+    permissions:
+      contents: read
+      attestations: read
     defaults:
       run:
         working-directory: contracts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch head, 2026-10-16
         with:
+          # The `stable` branch's action.yml defaults the toolchain to
+          # `stable`; once pinned by SHA, say it outright.
+          toolchain: stable
           components: rustfmt, clippy
           # Soroban SDK v28+ builds for wasm32v1-none (not wasm32-unknown-unknown).
           targets: wasm32v1-none
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: contracts
 
@@ -36,7 +56,11 @@ jobs:
         run: cargo test
 
       # The Soroban SDK build script requires stellar-cli v25.2.0+ to build wasm.
-      - uses: stellar/stellar-cli@v28.1.0
+      - uses: stellar/stellar-cli@c0f4d0da891bbf214c08b8c5035ae6db80e9a3bd # v28.1.0
+        with:
+          # The action builds its download URL from the ref it is invoked at,
+          # so a SHA pin has to name the release (otherwise the tarball 404s).
+          version: v28.1.0
 
       - name: Build wasm
         run: stellar contract build
@@ -48,9 +72,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
@@ -63,15 +87,35 @@ jobs:
       - run: npm run build
 
   backend:
-    name: Backend – typecheck & test
+    name: Backend – typecheck, migrations & test
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: backend
+    # `backend/Dockerfile` runs `prisma migrate deploy` when the container
+    # starts, so a broken or drifted migration is otherwise only discovered in
+    # production. A real Postgres lets us apply the committed migrations and
+    # prove they reproduce `schema.prisma` exactly.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: freelance_stellar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d freelance_stellar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/freelance_stellar
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
@@ -79,6 +123,23 @@ jobs:
 
       - run: npm ci
       - run: npx prisma generate
+
+      # Apply every committed migration to an empty database. A migration that
+      # does not run (broken SQL, a bad ordering) fails the build here, exactly
+      # as it would fail the container's start-up command (#53).
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      # `--exit-code` makes `migrate diff` exit non-zero when the migration
+      # history and `schema.prisma` disagree, so editing the schema without a
+      # matching migration fails instead of reaching production as drift.
+      - name: Migrations reproduce the schema (drift check)
+        run: >-
+          npx prisma migrate diff
+          --from-url "$DATABASE_URL"
+          --to-schema-datamodel prisma/schema.prisma
+          --exit-code
+
       - run: npx tsc --noEmit
       - run: npm test
 
@@ -95,9 +156,9 @@ jobs:
     name: Dependencies – vulnerability scan (advisory)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
 
@@ -114,9 +175,11 @@ jobs:
         continue-on-error: true
         run: npm audit --audit-level=high --omit=dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch head, 2026-10-16
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: contracts
 

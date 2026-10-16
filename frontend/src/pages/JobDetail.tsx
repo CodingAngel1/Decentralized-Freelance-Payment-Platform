@@ -22,6 +22,9 @@
  *   `useEscrow.openDispute`): the escrow is frozen, then `dispute.raise` mints
  *   the dispute the panel rules on. The id it returns is recorded against the
  *   off-chain row, which is where the reason is kept for the panel to read.
+ * - Each unreleased milestone shows its deadline and whether it has passed, so
+ *   the reminder is visible where the work is released, not only on the
+ *   Dashboard panel (issue #74).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -29,12 +32,14 @@ import { Link, useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
+import FiatEstimate from "../components/FiatEstimate";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
 import { assetForContractId, fromBaseUnits } from "../lib/assets";
 import { authenticate, createDispute, fetchJobs, linkDisputeId, submitRating as recordRating } from "../lib/api";
 import { formatDeadline, formatRemaining, secondsUntil } from "../lib/time";
+import { parseEscrowId } from "../lib/escrowId";
 
 const POLL_MS = 5_000;
 
@@ -83,6 +88,11 @@ export default function JobDetail() {
   const [escrow, setEscrow] = useState<EscrowView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [lastHash, setLastHash] = useState<string | null>(null);
+  // The conversation is scoped to the off-chain job id while this page is keyed
+  // by the on-chain escrow id, so the two are bridged once (below) for the
+  // participating wallet rather than on every 5s escrow poll.
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobLookupDone, setJobLookupDone] = useState(false);
   // Dispute timelock: the deadline read from the contract (unix seconds) plus a
   // 1s clock so the remaining time ticks without re-reading the chain each tick.
   const [disputeDeadline, setDisputeDeadline] = useState<bigint | null>(null);
@@ -99,7 +109,7 @@ export default function JobDetail() {
   const [reason, setReason] = useState("");
   const [disputeNote, setDisputeNote] = useState<string | null>(null);
 
-  const escrowId = id ? BigInt(id) : null;
+  const escrowId = id ? parseEscrowId(id) : null;
 
   const refresh = useCallback(async () => {
     if (escrowId === null) return;
@@ -125,6 +135,32 @@ export default function JobDetail() {
     return () => clearInterval(timer);
   }, [refresh]);
 
+  // Resolve the escrow id to the off-chain job id the messages API scopes to.
+  // Nothing is fetched until a wallet is connected: both endpoints require it.
+  useEffect(() => {
+    if (escrowId === null || !publicKey) {
+      setJobId(null);
+      setJobLookupDone(false);
+      return;
+    }
+    let cancelled = false;
+    setJobLookupDone(false);
+    void findJobIdByEscrow(escrowId, publicKey)
+      .then((id) => {
+        if (cancelled) return;
+        setJobId(id);
+        setJobLookupDone(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setJobId(null);
+        setJobLookupDone(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [escrowId, publicKey]);
+
   // Tick the countdown while a dispute is live, so "refundable in 2d 3h" is
   // accurate to the second between the 5s escrow polls.
   useEffect(() => {
@@ -145,10 +181,21 @@ export default function JobDetail() {
   if (escrowId === null) {
     return (
       <Layout>
-        <p>Invalid job id.</p>
+        <p role="alert">
+          Invalid job id{id ? ` "${id}"` : ""}.{" "}
+          Escrow ids must be non-negative integers.
+        </p>
+        <p>
+          <Link to="/">← Back to Dashboard</Link>
+        </p>
       </Layout>
     );
   }
+
+  // Read at render time rather than from the ticking `now` state above: that
+  // clock only runs while a dispute is live, and a milestone deadline matters in
+  // every state. The 5s escrow poll re-renders often enough to keep it honest.
+  const milestoneNow = Math.floor(Date.now() / 1000);
 
   // Show amounts in the escrow's asset (fall back to raw token units if the
   // SAC is not in the registry).
@@ -266,13 +313,30 @@ export default function JobDetail() {
       )}
 
       {(error || loadError) && (
-        <p role="alert" className="alert alert-error">
-          {error ?? loadError}
-        </p>
+        <div className="error-state">
+          <p role="alert" aria-live="assertive" className="alert alert-error">
+            {error ?? loadError}
+          </p>
+          <button
+            type="button"
+            className="btn-retry"
+            onClick={() => {
+              setLoadError(null);
+              void refresh();
+            }}
+          >
+            Retry
+          </button>
+        </div>
       )}
+
+      {!escrow && !error && !loadError && <JobDetailSkeleton />}
 
       {escrow && (
         <>
+          <p className="job-actions">
+            <Link to={`/jobs/${escrowId}/receipt`}>View receipt</Link>
+          </p>
           <p>
             Status: <StatusBadge status={escrow.status} />
           </p>
@@ -284,23 +348,44 @@ export default function JobDetail() {
             <AddressField address={escrow.freelancer} label="Freelancer address" qr />
             {isFreelancer && " (you)"}
             <br />
-            Total: <strong>{fromBaseUnits(escrow.total_amount, decimals)}</strong> {symbol}
+            Total: <strong>{fromBaseUnits(escrow.total_amount, decimals)}</strong> {symbol}{" "}
+            <FiatEstimate
+              amount={fromBaseUnits(escrow.total_amount, decimals)}
+              asset={symbol}
+            />
           </p>
 
           <h2>Milestones</h2>
           <ol>
             {escrow.milestones.map((m, i) => (
               <li key={i}>
-                {fromBaseUnits(m.amount, decimals)} {symbol} —{" "}
+                {fromBaseUnits(m.amount, decimals)} {symbol}{" "}
+                <FiatEstimate amount={fromBaseUnits(m.amount, decimals)} asset={symbol} /> —{" "}
                 {m.released
                   ? "released"
                   : `${fromBaseUnits(m.released_amount, decimals)} released, ${fromBaseUnits(
                       m.amount - m.released_amount,
                       decimals,
                     )} remaining`}{" "}
+                {!m.released && m.deadline > 0n && (
+                  <span className="muted">
+                    · due{" "}
+                    <time
+                      dateTime={new Date(Number(m.deadline) * 1000).toISOString()}
+                    >
+                      {formatDeadline(m.deadline)}
+                    </time>
+                    {secondsUntil(m.deadline, milestoneNow) === 0
+                      ? " (overdue)"
+                      : ` (${formatRemaining(
+                          secondsUntil(m.deadline, milestoneNow),
+                        )} left)`}
+                  </span>
+                )}{" "}
                 {isClient && isActive && !m.released && (
                   <button
                     disabled={isPending("release", `${escrowId}:${i}`)}
+                    aria-busy={isPending("release", `${escrowId}:${i}`)}
                     onClick={() =>
                       void releaseMilestone(escrowId, i).then((res) => {
                         if (res) setLastHash(res.hash);
@@ -318,16 +403,16 @@ export default function JobDetail() {
           {isParticipant && isActive && (
             <form onSubmit={handleOpenDispute}>
               <p>
-                <label>
+                <label htmlFor="dispute-reason">
                   Reason for the dispute
-                  <br />
                   <textarea
+                    id="dispute-reason"
+                    className="form-control"
                     value={reason}
                     onChange={(e) => setReason(e.target.value)}
                     minLength={MIN_REASON}
                     maxLength={1000}
-                    rows={2}
-                    cols={60}
+                    rows={3}
                     placeholder="What went wrong? The arbitrator panel reads this."
                     required
                   />
@@ -336,6 +421,7 @@ export default function JobDetail() {
               <button
                 type="submit"
                 disabled={reason.trim().length < MIN_REASON || isPending("dispute", `${escrowId}`)}
+                aria-busy={isPending("dispute", `${escrowId}`)}
                 title={
                   reason.trim().length < MIN_REASON
                     ? `A reason of at least ${MIN_REASON} characters is required`
@@ -346,7 +432,11 @@ export default function JobDetail() {
               </button>
             </form>
           )}
-          {disputeNote && <p className="muted">{disputeNote}</p>}
+          {disputeNote && (
+            <p role="status" aria-live="polite" className="muted">
+              {disputeNote}
+            </p>
+          )}
           {isDisputed && (
             <section>
               <p className="muted">This escrow is frozen pending arbitration.</p>
@@ -367,6 +457,7 @@ export default function JobDetail() {
               {isClient && (
                 <button
                   disabled={!deadlinePassed || isPending("reclaim", `${escrowId}`)}
+                  aria-busy={isPending("reclaim", `${escrowId}`)}
                   title={
                     deadlinePassed
                       ? "Refund the unreleased funds to your wallet"
@@ -397,9 +488,10 @@ export default function JobDetail() {
                 <fieldset disabled={isPending("rate")}>
                   <legend>Score</legend>
                   {SCORES.map((n) => (
-                    <label key={n}>
+                    <label key={n} htmlFor={`rating-score-${n}`}>
                       <input
                         type="radio"
+                        id={`rating-score-${n}`}
                         name="score"
                         value={n}
                         checked={score === n}
@@ -410,19 +502,23 @@ export default function JobDetail() {
                   ))}
                 </fieldset>
                 <p>
-                  <label>
+                  <label htmlFor="rating-comment">
                     Comment (optional)
-                    <br />
                     <textarea
+                      id="rating-comment"
+                      className="form-control"
                       value={comment}
                       onChange={(e) => setComment(e.target.value)}
                       maxLength={500}
                       rows={2}
-                      cols={60}
                     />
                   </label>
                 </p>
-                <button type="submit" disabled={score < 1 || isPending("rate")}>
+                <button
+                  type="submit"
+                  disabled={score < 1 || isPending("rate")}
+                  aria-busy={isPending("rate")}
+                >
                   {isPending("rate") ? "Submitting…" : "Submit rating"}
                 </button>
               </form>
@@ -430,15 +526,34 @@ export default function JobDetail() {
           )}
 
           {ratingDone && (
-            <p role="status">
+            <p role="status" aria-live="polite">
               {alreadyRated ? "You've already rated this job." : "Thanks — your rating was submitted."}{" "}
               <Link to={`/profile/${counterparty}`}>View reputation →</Link>
             </p>
           )}
-          {commentNote && <p className="muted">{commentNote}</p>}
+          {commentNote && (
+            <p role="status" aria-live="polite" className="muted">
+              {commentNote}
+            </p>
+          )}
+
+          {/* Only a participant has a conversation to read, and only once the
+              off-chain job that scopes it has been found. */}
+          {isParticipant &&
+            (jobId !== null ? (
+              <Conversation jobId={jobId} />
+            ) : jobLookupDone ? (
+              <section className="conversation">
+                <h2>Messages</h2>
+                <p className="muted">
+                  Messaging is unavailable for this job: it has no off-chain record to
+                  scope the conversation to.
+                </p>
+              </section>
+            ) : null)}
 
           {lastHash && (
-            <p>
+            <p role="status" aria-live="polite">
               Last transaction:{" "}
               <a
                 href={explorerTxUrl(lastHash)}

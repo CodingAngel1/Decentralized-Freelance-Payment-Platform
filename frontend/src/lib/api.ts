@@ -5,17 +5,42 @@
  * needs; `VITE_API_URL` configures the base URL (default localhost:3000).
  *
  * Contributor Notes:
- * - The backend indexer is still a stub, so jobs appear here only once created
- *   through the API — that is expected for now.
+ * - Jobs reach this client from the backend, whose contract-event indexer
+ *   (`backend/src/indexer.ts`) syncs chain state into the database. A job can
+ *   therefore appear here without this client having created it.
  * - `totalAmountUsdc`/`escrowId` come from Prisma and may serialize as strings.
+ * - `authenticate` caches the JWT it gets back, per address: signing the
+ *   challenge prompts the wallet, and the messaging view would otherwise prompt
+ *   on every unread refresh. See the comment on the cache below.
  */
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+
+/**
+ * How long a token from `authenticate` is reused.
+ *
+ * Deliberately under the server's 7-day JWT expiry, so a cached token is never
+ * presented after the server has stopped accepting it.
+ */
+const TOKEN_TTL_MS = 6 * 24 * 60 * 60 * 1000;
+
+/** Signed-in sessions, keyed by Stellar address. */
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+/** In-flight challenges, so two components mounting together share one prompt. */
+const pendingAuth = new Map<string, Promise<string>>();
+
+/** Drop a cached token (all addresses when called with none). */
+export function clearAuthToken(address?: string): void {
+  if (address === undefined) tokenCache.clear();
+  else tokenCache.delete(address);
+}
 
 export interface JobListQuery {
   status?: string;
   client?: string;
   freelancer?: string;
+  /** Curated skill-tag slug (see `lib/tags.ts`); issue #70. */
+  tag?: string;
   page?: number;
   limit?: number;
 }
@@ -26,10 +51,22 @@ export function buildJobsQuery(query: JobListQuery = {}): string {
   if (query.status) params.set("status", query.status);
   if (query.client) params.set("client", query.client);
   if (query.freelancer) params.set("freelancer", query.freelancer);
+  if (query.tag) params.set("tag", query.tag);
   if (query.page !== undefined) params.set("page", String(query.page));
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   const qs = params.toString();
   return qs ? `?${qs}` : "";
+}
+
+/** A milestone row as the jobs API returns it (see the Prisma model). */
+export interface JobMilestoneApi {
+  id?: string;
+  index?: number;
+  amountUsdc: string | number;
+  description?: string | null;
+  status: string;
+  deadline?: string | null;
+  releasedAt?: string | null;
 }
 
 export interface JobApi {
@@ -40,9 +77,16 @@ export interface JobApi {
   status: string;
   /** Asset symbol the job pays in (see lib/assets.ts). */
   asset?: string;
+  /** Curated skill-tag slugs (see lib/tags.ts); issue #70. */
+  tags?: string[];
   totalAmountUsdc: string | number;
+  /** ISO timestamp the off-chain record was created; used to order history. */
+  createdAt?: string;
   client?: { stellarAddress: string; displayName?: string | null } | null;
   freelancer?: { stellarAddress: string } | null;
+  /** Present on the list/detail responses; used by the activity summary (#73). */
+  milestones?: JobMilestoneApi[];
+  createdAt?: string;
 }
 
 /** Fetch a page of jobs. Throws on a non-2xx response. */
@@ -55,6 +99,182 @@ export async function fetchJobs(
   });
   if (!res.ok) throw new Error(`Could not load jobs (HTTP ${res.status})`);
   return (await res.json()) as JobApi[];
+}
+
+/**
+ * Every job an address took part in, as client or as freelancer.
+ *
+ * The API filters by one role at a time, so this asks for both and merges them:
+ * a job where the same address is somehow both parties must not be listed twice.
+ * Newest first, using `createdAt` when the API provided one.
+ */
+export async function fetchUserJobs(
+  address: string,
+  signal?: AbortSignal,
+): Promise<JobApi[]> {
+  const [asClient, asFreelancer] = await Promise.all([
+    fetchJobs({ client: address, limit: 100 }, signal),
+    fetchJobs({ freelancer: address, limit: 100 }, signal),
+  ]);
+  const byId = new Map<string, JobApi>();
+  for (const job of [...asClient, ...asFreelancer]) byId.set(job.id, job);
+  return [...byId.values()].sort((a, b) =>
+    (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+  );
+}
+
+/** A single rating an address received, with the job it refers to. */
+export interface ReceivedRatingApi {
+  id: string;
+  score: number;
+  comment: string | null;
+  /** ISO timestamp the rating was stored. */
+  createdAt: string;
+  job?: { id: string; title: string; escrowId: string | number | null; status: string } | null;
+  rater?: { stellarAddress: string } | null;
+}
+
+/**
+ * The individual ratings an address received, newest first (issue #69).
+ *
+ * `GET /api/reputation/:address` only returns the aggregate; this is the detail
+ * behind it — score, job and date per rating.
+ */
+export async function fetchRatingsReceived(
+  address: string,
+  signal?: AbortSignal,
+): Promise<ReceivedRatingApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/reputation/${encodeURIComponent(address)}/ratings`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load ratings (HTTP ${res.status})`);
+  return (await res.json()) as ReceivedRatingApi[];
+}
+
+/**
+ * One indexed contract event, as the history endpoint returns it (issue #72).
+ *
+ * `amount` is already in whole units of `asset` (like `JobApi.totalAmountUsdc`),
+ * so it is shown as-is; `txHash` is what `explorerTxUrl` turns into a link.
+ */
+export interface TransactionApi {
+  id: string;
+  escrowId: string;
+  action: string;
+  amount: string | null;
+  asset: string | null;
+  txHash: string | null;
+  ledger: number;
+  createdAt: string;
+}
+
+/** The on-chain history for an address's escrows, newest ledger first. */
+export async function fetchTransactions(
+  address: string,
+  signal?: AbortSignal,
+): Promise<TransactionApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/users/${encodeURIComponent(address)}/transactions`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load transactions (HTTP ${res.status})`);
+  return (await res.json()) as TransactionApi[];
+}
+
+/** How a milestone deadline reads right now (issue #74). */
+export type ReminderKind = "overdue" | "due-soon";
+
+/** A milestone deadline that has passed or is coming up. */
+export interface ReminderApi {
+  jobId: string;
+  title: string;
+  escrowId: string | null;
+  milestoneIndex: number;
+  description: string | null;
+  /** Whole units of the job's asset. */
+  amount: string;
+  deadline: string;
+  kind: ReminderKind;
+  role: "client" | "freelancer";
+}
+
+/**
+ * The milestone reminders for an address's open jobs, overdue first.
+ *
+ * The deadlines are evaluated by the server against its own clock, so the client
+ * only decides how to present `kind`.
+ */
+export async function fetchReminders(
+  address: string,
+  signal?: AbortSignal,
+): Promise<ReminderApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/users/${encodeURIComponent(address)}/reminders`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load reminders (HTTP ${res.status})`);
+  return (await res.json()) as ReminderApi[];
+}
+
+/** One milestone as the receipt reports it. */
+export interface ReceiptMilestoneApi {
+  index: number;
+  description: string | null;
+  /** Whole units of the job's asset. */
+  amount: string;
+  status: string;
+  deadline: string | null;
+  releasedAt: string | null;
+}
+
+/** One indexed event as the receipt reports it. */
+export interface ReceiptEventApi {
+  id: string;
+  action: string;
+  /** Whole units of the job's asset, or null when the event moved nothing. */
+  amount: string | null;
+  /** Transaction that emitted the event, for the explorer link. */
+  txHash: string | null;
+  ledger: number;
+  createdAt: string;
+}
+
+/**
+ * A printable/exportable record of one escrow (issue #77): what was agreed, what
+ * was released, and the transaction behind each step.
+ */
+export interface EscrowReceiptApi {
+  escrowId: string;
+  generatedAt: string;
+  job: {
+    id: string;
+    title: string;
+    description: string;
+    status: string;
+    asset: string;
+    totalAmount: string;
+    createdAt: string;
+    expiresAt: string | null;
+    client: { stellarAddress: string; displayName: string | null } | null;
+    freelancer: { stellarAddress: string; displayName: string | null } | null;
+  };
+  milestones: ReceiptMilestoneApi[];
+  events: ReceiptEventApi[];
+  totals: { released: string; outstanding: string };
+}
+
+/** Fetch the receipt for an escrow. Throws, with the status, on a non-2xx. */
+export async function fetchReceipt(
+  escrowId: string | number | bigint,
+  signal?: AbortSignal,
+): Promise<EscrowReceiptApi> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/escrow/${encodeURIComponent(String(escrowId))}/receipt`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load the receipt (HTTP ${res.status})`);
+  return (await res.json()) as EscrowReceiptApi;
 }
 
 // ---------------------------------------------------------------------------
@@ -76,35 +296,96 @@ export interface CreateJobInput {
   description: string;
   /** Asset symbol the job pays in; the backend stores it on the job. */
   asset: string;
+  /**
+   * Curated skill-tag slugs describing the work (see lib/tags.ts). Optional:
+   * the API defaults an absent list to none, so an older client still works.
+   */
+  tags?: string[];
   milestones: CreateJobMilestoneInput[];
   expiresAt?: string;
 }
 
 /**
+ * The caller's bookmarked jobs, most recently saved first (issue #71).
+ *
+ * Returns the same shape as `fetchJobs`, so the dashboard renders a saved job
+ * with the component it already uses for every other row.
+ */
+export async function fetchSavedJobs(token: string): Promise<JobApi[]> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/saved`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not load saved jobs (HTTP ${res.status})`);
+  return (await res.json()) as JobApi[];
+}
+
+/** Bookmark a job. Idempotent on the server, so a double click is harmless. */
+export async function saveJob(jobId: string, token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/save`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not save the job (HTTP ${res.status})`);
+}
+
+/** Remove a bookmark. Unsaving one that was never saved is not an error. */
+export async function unsaveJob(jobId: string, token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/save`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not remove the bookmark (HTTP ${res.status})`);
+}
+
+/**
  * Complete the wallet challenge-response flow and return a bearer token.
  * `signMessage` signs the challenge nonce per SEP-53 (see Freighter).
+ *
+ * The token is cached per address and reused for `TOKEN_TTL_MS`, because every
+ * signature is a wallet prompt: without this, a page that refreshes an
+ * authenticated read would ask the user to sign each time. Concurrent callers
+ * that miss the cache share a single in-flight challenge for the same reason.
+ * Pass `{ fresh: true }` to force a new challenge (e.g. after a 401).
  */
 export async function authenticate(
   address: string,
   signMessage: (message: string) => Promise<string>,
+  options: { fresh?: boolean } = {},
 ): Promise<string> {
-  const challengeRes = await fetch(
-    `${API_BASE_URL}/api/users/challenge?address=${encodeURIComponent(address)}`,
-  );
-  if (!challengeRes.ok) {
-    throw new Error(`Could not get an auth challenge (HTTP ${challengeRes.status})`);
+  if (!options.fresh) {
+    const cached = tokenCache.get(address);
+    if (cached && cached.expiresAt > Date.now()) return cached.token;
+    const inflight = pendingAuth.get(address);
+    if (inflight) return inflight;
   }
-  const { nonce } = (await challengeRes.json()) as { nonce: string };
 
-  const signature = await signMessage(nonce);
-  const authRes = await fetch(`${API_BASE_URL}/api/users/auth`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ address, signature, nonce }),
-  });
-  if (!authRes.ok) throw new Error(`Authentication failed (HTTP ${authRes.status})`);
-  const { token } = (await authRes.json()) as { token: string };
-  return token;
+  const challenge = (async () => {
+    const challengeRes = await fetch(
+      `${API_BASE_URL}/api/users/challenge?address=${encodeURIComponent(address)}`,
+    );
+    if (!challengeRes.ok) {
+      throw new Error(`Could not get an auth challenge (HTTP ${challengeRes.status})`);
+    }
+    const { nonce } = (await challengeRes.json()) as { nonce: string };
+
+    const signature = await signMessage(nonce);
+    const authRes = await fetch(`${API_BASE_URL}/api/users/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address, signature, nonce }),
+    });
+    if (!authRes.ok) throw new Error(`Authentication failed (HTTP ${authRes.status})`);
+    const { token } = (await authRes.json()) as { token: string };
+    tokenCache.set(address, { token, expiresAt: Date.now() + TOKEN_TTL_MS });
+    return token;
+  })();
+
+  pendingAuth.set(address, challenge);
+  try {
+    return await challenge;
+  } finally {
+    pendingAuth.delete(address);
+  }
 }
 
 /** Create the off-chain job record (requires a token from `authenticate`). */
@@ -245,3 +526,130 @@ export async function linkDisputeId(
   if (!res.ok) throw new Error(`Could not record the dispute id (HTTP ${res.status})`);
   return (await res.json()) as DisputeApi;
 }
+
+// ---------------------------------------------------------------------------
+// Notifications (#66)
+// ---------------------------------------------------------------------------
+
+export interface NotificationApi {
+  id: string;
+  userId: string;
+  jobId: string | null;
+  type: "FUNDED" | "RELEASED" | "DISPUTED" | "RESOLVED";
+  title: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface NotificationsResponse {
+  notifications: NotificationApi[];
+  unreadCount: number;
+}
+
+/** Fetch user notifications (requires bearer token). */
+export async function fetchNotifications(
+  token: string,
+  unreadOnly = false,
+  signal?: AbortSignal,
+): Promise<NotificationsResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/notifications${unreadOnly ? "?unread=true" : ""}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+    },
+  );
+  if (!res.ok) throw new Error(`Could not load notifications (HTTP ${res.status})`);
+  return (await res.json()) as NotificationsResponse;
+}
+
+/** Mark a single notification as read. */
+export async function markNotificationRead(
+  token: string,
+  notificationId: string,
+): Promise<NotificationApi> {
+  const res = await fetch(`${API_BASE_URL}/api/notifications/${notificationId}/read`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not mark notification as read (HTTP ${res.status})`);
+  return (await res.json()) as NotificationApi;
+}
+
+/** Mark all notifications for the user as read. */
+export async function markAllNotificationsRead(token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/notifications/read-all`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not mark all notifications as read (HTTP ${res.status})`);
+}
+
+// ---------------------------------------------------------------------------
+// Freelancer Directory (#68)
+// ---------------------------------------------------------------------------
+
+export interface FreelancerApi {
+  id: string;
+  stellarAddress: string;
+  displayName: string | null;
+  bio: string | null;
+  createdAt: string;
+  averageScore: number;
+  totalRatings: number;
+  completedJobsCount: number;
+  totalJobsCount: number;
+}
+
+export interface FreelancerListQuery {
+  search?: string;
+  sortBy?: "reputation" | "jobs" | "recent";
+  sortOrder?: "asc" | "desc";
+  page?: number;
+  limit?: number;
+}
+
+export interface FreelancersResponse {
+  freelancers: FreelancerApi[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+/** Build the `/api/users/freelancers` query string, omitting empty filters. */
+export function buildFreelancersQuery(query: FreelancerListQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.search) params.set("search", query.search);
+  if (query.sortBy) params.set("sortBy", query.sortBy);
+  if (query.sortOrder) params.set("sortOrder", query.sortOrder);
+  if (query.page !== undefined) params.set("page", String(query.page));
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/** Fetch a page of freelancers from the directory. Throws on non-2xx response. */
+export async function fetchFreelancers(
+  query: FreelancerListQuery = {},
+  signal?: AbortSignal,
+): Promise<FreelancersResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/users/freelancers${buildFreelancersQuery(query)}`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load freelancers (HTTP ${res.status})`);
+  const data = await res.json();
+  if (Array.isArray(data)) {
+    return {
+      freelancers: data,
+      total: data.length,
+      page: 1,
+      limit: data.length,
+      totalPages: 1,
+    };
+  }
+  return data as FreelancersResponse;
+}
+
