@@ -1,9 +1,10 @@
 /**
  * users.ts
  *
- * POST /api/users/auth   — issue JWT after verifying a signed Stellar challenge
- * GET  /api/users/:addr  — get public profile
- * PUT  /api/users/me     — update display name / bio (auth required)
+ * POST /api/users/auth            — issue JWT after verifying a signed Stellar challenge
+ * GET  /api/users/:addr           — get public profile
+ * GET  /api/users/:addr/transactions — on-chain history for the user's escrows
+ * PUT  /api/users/me              — update display name / bio (auth required)
  *
  * Auth flow (challenge-response):
  *   1. Client calls GET /api/users/challenge?address=G...
@@ -27,6 +28,7 @@ import { AppError } from "../middleware/errorHandler";
 import { consumeNonce, issueNonce, type AuthNonceStore } from "../lib/authNonce";
 import { verifySignedMessage } from "../lib/signature";
 import { isValidStellarAddress } from "../lib/stellarAddress";
+import { formatBaseUnitsForAsset } from "../lib/assets";
 
 export const usersRouter = Router();
 
@@ -82,6 +84,62 @@ usersRouter.post("/auth", validate(authSchema), async (req, res, next) => {
       .sign(secret);
 
     res.json({ token, user });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/users/:address/transactions
+//
+// The consolidated history a single action-at-a-time UI never had (issue #72).
+// A user's history is the indexed events on the escrows of the jobs they took
+// part in, newest ledger first. The event's `amount` is returned in whole units
+// of the job's asset (like `Job.totalAmountUsdc`) rather than raw base units, and
+// `txHash` is what the client turns into an explorer link.
+usersRouter.get("/:address/transactions", async (req, res, next) => {
+  try {
+    const address = req.params.address;
+    const jobs = await prisma.job.findMany({
+      where: {
+        OR: [
+          { client: { stellarAddress: address } },
+          { freelancer: { stellarAddress: address } },
+        ],
+      },
+      select: { escrowId: true, asset: true },
+    });
+
+    const assetByEscrow = new Map<string, string>();
+    for (const job of jobs) {
+      if (job.escrowId !== null) assetByEscrow.set(job.escrowId.toString(), job.asset);
+    }
+    const escrowIds = [...assetByEscrow.keys()].map((id) => BigInt(id));
+    if (escrowIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const events = await prisma.chainEvent.findMany({
+      where: { escrowId: { in: escrowIds } },
+      orderBy: { ledger: "desc" },
+      take: 200,
+    });
+
+    res.json(
+      events.map((event) => {
+        const symbol = assetByEscrow.get(event.escrowId.toString()) ?? null;
+        return {
+          id: event.id,
+          escrowId: event.escrowId.toString(),
+          action: event.action,
+          amount: event.amount === null ? null : formatBaseUnitsForAsset(event.amount.toString(), symbol),
+          asset: symbol,
+          txHash: event.txHash,
+          ledger: event.ledger,
+          createdAt: event.createdAt,
+        };
+      }),
+    );
   } catch (err) {
     next(err);
   }

@@ -5,6 +5,7 @@ import {
   createDispute,
   createJob,
   fetchRatingsReceived,
+  fetchTransactions,
   fetchUserJobs,
   linkDisputeId,
   submitRating,
@@ -132,6 +133,47 @@ describe("fetchRatingsReceived", () => {
     );
 
     await expect(fetchRatingsReceived("GADDR")).rejects.toThrow(/HTTP 500/);
+  });
+});
+
+describe("fetchTransactions", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests the per-address history endpoint and returns the events", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: "evt-42",
+            escrowId: "7",
+            action: "milestone_released",
+            amount: "0.3",
+            asset: "USDC",
+            txHash: "abc123",
+            ledger: 42,
+            createdAt: "2026-01-02T00:00:00.000Z",
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const events = await fetchTransactions("GADDR");
+
+    expect(events[0].txHash).toBe("abc123");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/users/GADDR/transactions");
+  });
+
+  it("throws with the status when the API rejects the read", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 503 })),
+    );
+
+    await expect(fetchTransactions("GADDR")).rejects.toThrow(/HTTP 503/);
   });
 });
 

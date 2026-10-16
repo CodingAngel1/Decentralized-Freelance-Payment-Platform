@@ -2,14 +2,19 @@
  * Profile.tsx
  *
  * A public view of one address: its on-chain reputation aggregate, the jobs it
- * took part in, and the individual ratings behind the aggregate (issue #69).
+ * took part in, the individual ratings behind the aggregate (issue #69), and the
+ * indexed on-chain activity for its escrows (issue #72).
  *
  * Contributor Notes:
  * - The aggregate comes from the reputation contract (`useEscrow.getReputation`),
- *   which needs a connected wallet; the job history and rating list come from the
- *   backend API, so they render for an unconnected visitor too.
+ *   which needs a connected wallet; the job history, rating list and transaction
+ *   history come from the backend API, so they render for an unconnected visitor
+ *   too.
  * - Job rows are merged from the client and freelancer filters (`fetchUserJobs`)
  *   and deduplicated by job id, so an address that is both parties sees one row.
+ * - The transaction history is derived from indexed events, so it is the one
+ *   place a client sees a consolidated record of what happened on-chain rather
+ *   than one action at a time.
  */
 
 import { useEffect, useState } from "react";
@@ -19,7 +24,16 @@ import AddressField from "../components/AddressField";
 import StatusBadge from "../components/StatusBadge";
 import { useEscrow, type ReputationView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
-import { fetchRatingsReceived, fetchUserJobs, type JobApi, type ReceivedRatingApi } from "../lib/api";
+import {
+  fetchRatingsReceived,
+  fetchTransactions,
+  fetchUserJobs,
+  type JobApi,
+  type ReceivedRatingApi,
+  type TransactionApi,
+} from "../lib/api";
+import { actionLabel } from "../lib/activity";
+import { explorerTxUrl } from "../lib/stellar";
 import { formatDate } from "../lib/time";
 
 export default function Profile() {
@@ -31,6 +45,7 @@ export default function Profile() {
   // `null` means "not loaded yet"; an empty array means "loaded, nothing there".
   const [jobs, setJobs] = useState<JobApi[] | null>(null);
   const [ratings, setRatings] = useState<ReceivedRatingApi[] | null>(null);
+  const [transactions, setTransactions] = useState<TransactionApi[] | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,11 +60,17 @@ export default function Profile() {
     setHistoryError(null);
     setJobs(null);
     setRatings(null);
-    void Promise.all([fetchUserJobs(address), fetchRatingsReceived(address)])
-      .then(([jobRows, ratingRows]) => {
+    setTransactions(null);
+    void Promise.all([
+      fetchUserJobs(address),
+      fetchRatingsReceived(address),
+      fetchTransactions(address),
+    ])
+      .then(([jobRows, ratingRows, txRows]) => {
         if (cancelled) return;
         setJobs(jobRows);
         setRatings(ratingRows);
+        setTransactions(txRows);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -57,6 +78,7 @@ export default function Profile() {
         // Distinguish "could not load" from "nothing to show".
         setJobs([]);
         setRatings([]);
+        setTransactions([]);
       });
     return () => {
       cancelled = true;
@@ -173,6 +195,59 @@ export default function Profile() {
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section>
+        <h2>Transaction history</h2>
+        {transactions === null && <p>Loading transactions…</p>}
+        {transactions !== null && transactions.length === 0 && !historyError && (
+          <p className="muted">No on-chain activity yet.</p>
+        )}
+        {transactions !== null && transactions.length > 0 && (
+          <table className="tx-history">
+            <thead>
+              <tr>
+                <th>Escrow</th>
+                <th>Action</th>
+                <th>Amount</th>
+                <th>Date</th>
+                <th>Transaction</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transactions.map((tx) => (
+                <tr key={tx.id}>
+                  <td>
+                    <Link to={`/jobs/${tx.escrowId}`}>#{tx.escrowId}</Link>
+                  </td>
+                  <td>{actionLabel(tx.action)}</td>
+                  <td>
+                    {tx.amount === null
+                      ? "—"
+                      : `${tx.amount}${tx.asset ? ` ${tx.asset}` : ""}`}
+                  </td>
+                  <td>
+                    <time dateTime={tx.createdAt}>{formatDate(tx.createdAt)}</time>
+                  </td>
+                  <td>
+                    {tx.txHash ? (
+                      <a
+                        href={explorerTxUrl(tx.txHash)}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={tx.txHash}
+                      >
+                        <code>{tx.txHash.slice(0, 12)}…</code>
+                      </a>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </section>
     </Layout>

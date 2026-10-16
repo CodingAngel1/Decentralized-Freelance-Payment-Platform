@@ -110,6 +110,36 @@ export async function fetchRatingsReceived(
   return (await res.json()) as ReceivedRatingApi[];
 }
 
+/**
+ * One indexed contract event, as the history endpoint returns it (issue #72).
+ *
+ * `amount` is already in whole units of `asset` (like `JobApi.totalAmountUsdc`),
+ * so it is shown as-is; `txHash` is what `explorerTxUrl` turns into a link.
+ */
+export interface TransactionApi {
+  id: string;
+  escrowId: string;
+  action: string;
+  amount: string | null;
+  asset: string | null;
+  txHash: string | null;
+  ledger: number;
+  createdAt: string;
+}
+
+/** The on-chain history for an address's escrows, newest ledger first. */
+export async function fetchTransactions(
+  address: string,
+  signal?: AbortSignal,
+): Promise<TransactionApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/users/${encodeURIComponent(address)}/transactions`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load transactions (HTTP ${res.status})`);
+  return (await res.json()) as TransactionApi[];
+}
+
 // ---------------------------------------------------------------------------
 // Authenticated writes
 // ---------------------------------------------------------------------------

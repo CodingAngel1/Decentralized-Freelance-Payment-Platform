@@ -33,6 +33,10 @@
  *     `REFUNDED` and `RESOLVED` are the two terminal dispute states.
  *
  * Contributor Notes:
+ * - Every recognised event is also stored verbatim in ChainEvent (issue #72) so
+ *   a per-user history and an escrow receipt can link to the transaction that
+ *   emitted it; the state handlers below are unaffected by that write, which is
+ *   best-effort.
  * - The cursor (last scanned ledger) is persisted in IndexerCursor, so the
  *   indexer resumes after a restart and does not reprocess applied ledgers.
  * - Unknown events are ignored; a failed event is logged and recorded in
@@ -308,6 +312,20 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
   if (!name || !KNOWN_EVENTS.has(name)) return; // unknown events are ignored
 
   const data = decodeEventFields(event, EVENT_TOPIC_FIELDS[name] ?? []);
+
+  // Record the event itself (issue #72). Best-effort: history is derived data,
+  // and a failure to store it must not stop the state mirror below from being
+  // updated — a dropped history row is recoverable by replaying the event,
+  // whereas a skipped state change is what the dead-letter table exists for.
+  try {
+    const row = buildChainEvent(event, name, data);
+    if (row) {
+      await prisma.chainEvent.upsert({ where: { id: row.id }, create: row, update: {} });
+    }
+  } catch (err) {
+    console.error(`[indexer] could not record event ${event.id ?? "?"} in the history`, err);
+  }
+
   switch (name) {
     case "created":
       await handleCreated(data);
@@ -354,6 +372,83 @@ function asNumber(value: unknown): number | null {
 
 function asAddress(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+// ---------------------------------------------------------------------------
+// Transaction history (issue #72)
+// ---------------------------------------------------------------------------
+
+/**
+ * The fields an event moves value in, summed when an event splits funds.
+ *
+ * Deliberately narrow: `created` and `milestones_updated` report a total (the
+ * escrow's), not a movement, so they carry no amount and a history row for them
+ * shows none rather than a misleading figure.
+ */
+const EVENT_AMOUNT_FIELDS: Record<string, string[]> = {
+  funded: ["amount"],
+  milestone_released: ["amount"],
+  refunded: ["amount"],
+  // The two shares are what the ruling actually distributed.
+  resolved: ["client_share", "freelancer_share"],
+};
+
+/** A new `ChainEvent` row: how an indexed event is stored for a history view. */
+export interface ChainEventRow {
+  id: string;
+  escrowId: bigint;
+  action: string;
+  /** In the asset's integer base units, or `null` when the event moves nothing. */
+  amount: string | null;
+  txHash: string | null;
+  ledger: number;
+  createdAt: Date;
+}
+
+/** The value an event moved, in base units, or `null` if it moved none. */
+function eventAmount(name: string, data: Record<string, unknown>): string | null {
+  const fields = EVENT_AMOUNT_FIELDS[name];
+  if (!fields) return null;
+  const values = fields
+    .map((field) => asBigInt(data[field]))
+    .filter((value): value is bigint => value !== null);
+  if (values.length === 0) return null;
+  return values.reduce((total, value) => total + value, 0n).toString();
+}
+
+/**
+ * Turn an event into the row a history view reads, or `null` when it cannot be
+ * one: an event is only history if it belongs to an escrow (`approved` carries no
+ * escrow id) and has a value we would store.
+ *
+ * Pure, so the amount extraction and the fallbacks are unit-testable without a
+ * database (see `__tests__/indexer.test.ts`).
+ */
+export function buildChainEvent(
+  event: ContractEventLike,
+  name: string,
+  data: Record<string, unknown>,
+): ChainEventRow | null {
+  const escrowId = asBigInt(data.escrow_id);
+  if (escrowId === null) return null;
+
+  // RPC ids are stable, so a replayed event upserts the same row; the composed
+  // key is only for fixtures that carry no id.
+  const id = event.id ?? `${event.ledger}-${name}-${escrowId}`;
+
+  const closedAt = event.ledgerClosedAt ? new Date(event.ledgerClosedAt) : null;
+  const createdAt =
+    closedAt && !Number.isNaN(closedAt.getTime()) ? closedAt : new Date();
+
+  return {
+    id,
+    escrowId,
+    action: name,
+    amount: eventAmount(name, data),
+    txHash: event.txHash ?? null,
+    ledger: event.ledger,
+    createdAt,
+  };
 }
 
 async function handleCreated(data: Record<string, unknown>): Promise<void> {

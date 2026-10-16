@@ -3,9 +3,10 @@
  *
  * The reputation view is read-only, but it is the page a client checks before
  * paying someone. The states that matter are: the aggregate, the job history and
- * the individual ratings behind it (issue #69), an address with nothing yet, and
- * a read that failed. The wallet, the SDK and the API client are mocked — no
- * network, no Freighter.
+ * the individual ratings behind it (issue #69), the indexed on-chain history for
+ * the address's escrows (issue #72), an address with nothing yet, and a read that
+ * failed. The wallet, the SDK and the API client are mocked — no network, no
+ * Freighter.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +27,7 @@ const h = vi.hoisted(() => ({
   api: {
     fetchUserJobs: vi.fn(),
     fetchRatingsReceived: vi.fn(),
+    fetchTransactions: vi.fn(),
   },
 }));
 
@@ -40,10 +42,11 @@ vi.mock("../hooks/useEscrow", () => ({ useEscrow: () => h.escrow }));
 vi.mock("../lib/api", () => ({
   fetchUserJobs: h.api.fetchUserJobs,
   fetchRatingsReceived: h.api.fetchRatingsReceived,
+  fetchTransactions: h.api.fetchTransactions,
 }));
 
 import Profile from "./Profile";
-import type { JobApi, ReceivedRatingApi } from "../lib/api";
+import type { JobApi, ReceivedRatingApi, TransactionApi } from "../lib/api";
 
 const ADDRESS = h.address;
 
@@ -78,6 +81,20 @@ function rating(overrides: Partial<ReceivedRatingApi> = {}): ReceivedRatingApi {
   };
 }
 
+function transaction(overrides: Partial<TransactionApi> = {}): TransactionApi {
+  return {
+    id: "evt-42",
+    escrowId: "7",
+    action: "milestone_released",
+    amount: "0.3",
+    asset: "USDC",
+    txHash: "abc123def4567890",
+    ledger: 42,
+    createdAt: "2026-01-02T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   h.escrow.getReputation.mockReset();
   // `useEscrow.run` is async, so a real read always resolves — to `undefined`
@@ -91,6 +108,8 @@ beforeEach(() => {
   h.api.fetchUserJobs.mockResolvedValue([]);
   h.api.fetchRatingsReceived.mockReset();
   h.api.fetchRatingsReceived.mockResolvedValue([]);
+  h.api.fetchTransactions.mockReset();
+  h.api.fetchTransactions.mockResolvedValue([]);
 });
 
 afterEach(() => cleanup());
@@ -239,5 +258,41 @@ describe("Profile rating breakdown (#69)", () => {
     render(<Profile />);
 
     expect(await screen.findByText("No ratings received yet.")).toBeTruthy();
+  });
+});
+
+describe("Profile transaction history (#72)", () => {
+  it("lists escrow, action, amount and an explorer link per indexed event", async () => {
+    h.api.fetchTransactions.mockResolvedValue([
+      transaction(),
+      transaction({
+        id: "evt-9",
+        escrowId: "7",
+        action: "created",
+        amount: null,
+        txHash: "ffff0000aaaa",
+        ledger: 9,
+      }),
+    ]);
+
+    render(<Profile />);
+
+    // The raw event name is not what a client should have to read.
+    expect(await screen.findByText("Milestone released")).toBeTruthy();
+    expect(screen.getByText("Escrow created")).toBeTruthy();
+    // Both rows are on the same escrow and link to it.
+    expect(screen.getAllByRole("link", { name: "#7" })[0].getAttribute("href")).toBe("/jobs/7");
+    expect(screen.getByText("0.3 USDC")).toBeTruthy();
+    // An event that moved nothing shows a dash rather than "0".
+    expect(screen.getByText("—")).toBeTruthy();
+    const explorer = screen.getByRole("link", { name: "abc123def456…" });
+    expect(explorer.getAttribute("href")).toContain("/tx/abc123def4567890");
+    expect(h.api.fetchTransactions).toHaveBeenCalledWith(ADDRESS);
+  });
+
+  it("shows an empty state when there is no on-chain activity", async () => {
+    render(<Profile />);
+
+    expect(await screen.findByText("No on-chain activity yet.")).toBeTruthy();
   });
 });
