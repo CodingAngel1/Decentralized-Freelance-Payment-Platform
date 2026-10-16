@@ -72,3 +72,21 @@ export function buildCreateArgs(input: CreateArgsInput): xdr.ScVal[] {
     nativeToScVal(input.expiry, { type: "u64" }),
   ];
 }
+
+export interface UpdateMilestonesArgsInput {
+  escrowId: bigint;
+  milestones: MilestoneArg[];
+}
+
+/**
+ * Build the arguments for `escrow.update_milestones(escrow_id, milestones)`.
+ *
+ * The call replaces the whole breakdown, so the new milestone list has to be
+ * encoded exactly the way `create` encodes it — same struct, same field order.
+ */
+export function buildUpdateMilestonesArgs(input: UpdateMilestonesArgsInput): xdr.ScVal[] {
+  return [
+    nativeToScVal(input.escrowId, { type: "u64" }),
+    milestonesToScVal(input.milestones),
+  ];
+}

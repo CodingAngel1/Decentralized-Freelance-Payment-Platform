@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 
 import { config } from "./config";
 import { isAllowedOrigin, parseList } from "./lib/access";
+import { jsonReplacer } from "./lib/json";
 import { errorHandler } from "./middleware/errorHandler";
 import { usersRouter } from "./routes/users";
 import { jobsRouter } from "./routes/jobs";
@@ -37,6 +38,9 @@ export function createApp() {
   );
 
   app.use(express.json());
+  // Prisma rows carry BigInt ids, which `JSON.stringify` throws on; without this
+  // any route that returns a job or dispute row would 500 after a successful write.
+  app.set("json replacer", jsonReplacer);
   app.use(rateLimit({ windowMs: 60_000, max: 100 }));
 
   app.get("/health", (_req, res) => res.json({ status: "ok" }));

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { authenticate, buildJobsQuery, createJob, submitRating } from "./api";
+import { authenticate, buildJobsQuery, createDispute, createJob, linkDisputeId, submitRating } from "./api";
 
 describe("buildJobsQuery", () => {
   it("omits empty filters", () => {
@@ -130,5 +130,82 @@ describe("submitRating", () => {
     await expect(
       submitRating({ jobId: "job-1", rateeAddress: "GRATEE", score: 5 }, "jwt-1"),
     ).rejects.toThrow(/HTTP 400/);
+  });
+});
+
+describe("createDispute", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("POSTs the job id and the reason with a bearer token", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          dispute: { id: "dispute-1", jobId: "job-1", onChainId: null, status: "RAISED", reason: "late" },
+          xdr: "AAAA",
+        }),
+        { status: 201 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await createDispute({ jobId: "job-1", reason: "late" }, "jwt-1");
+
+    // The row exists before the chain knows about the dispute, so its id is what
+    // `linkDisputeId` has to carry forward.
+    expect(res.dispute.id).toBe("dispute-1");
+    expect(res.dispute.onChainId).toBeNull();
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/disputes");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-1");
+    expect(JSON.parse(init.body as string)).toEqual({ jobId: "job-1", reason: "late" });
+  });
+
+  it("throws with the status when the API refuses to record it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 403 })),
+    );
+
+    await expect(createDispute({ jobId: "job-1", reason: "late" }, "jwt-1")).rejects.toThrow(
+      /HTTP 403/,
+    );
+  });
+});
+
+describe("linkDisputeId", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("POSTs the on-chain id returned by dispute.raise as a number", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ id: "dispute-1", jobId: "job-1", onChainId: "3", status: "RAISED", reason: "late" }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    // The contract returns a bigint; the route validates an integer, and the
+    // column is a BigInt, so it must not be sent as a string.
+    const updated = await linkDisputeId("dispute-1", 3n, "jwt-1");
+
+    expect(updated.onChainId).toBe("3");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/disputes/dispute-1/sync");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ onChainId: 3 });
+  });
+
+  it("throws with the status when the id cannot be recorded", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 403 })),
+    );
+
+    await expect(linkDisputeId("dispute-1", 3n, "jwt-1")).rejects.toThrow(/HTTP 403/);
   });
 });

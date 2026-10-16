@@ -7,7 +7,9 @@ const h = vi.hoisted(() => ({
     getEscrow: vi.fn(),
     releaseMilestone: vi.fn(),
     openDispute: vi.fn(),
+    reclaimDisputed: vi.fn(),
     submitRating: vi.fn(),
+    getDisputeDeadline: vi.fn(),
     isPending: vi.fn(() => false),
     hasPendingWrite: vi.fn(() => false),
     error: null as string | null,
@@ -21,6 +23,8 @@ const h = vi.hoisted(() => ({
   authenticate: vi.fn(async () => "jwt-1"),
   fetchJobs: vi.fn(async () => [] as unknown[]),
   recordRating: vi.fn(async () => ({ rating: {}, xdr: "x" })),
+  createDispute: vi.fn(),
+  linkDisputeId: vi.fn(),
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -39,6 +43,8 @@ vi.mock("../lib/api", () => ({
   authenticate: h.authenticate,
   fetchJobs: h.fetchJobs,
   submitRating: h.recordRating,
+  createDispute: h.createDispute,
+  linkDisputeId: h.linkDisputeId,
 }));
 
 import JobDetail from "./JobDetail";
@@ -59,12 +65,44 @@ const COMPLETED = {
   expiry: 0n,
 };
 
+/** A disputed escrow with one milestone still unreleased. */
+const DISPUTED = {
+  ...COMPLETED,
+  status: "Disputed",
+  milestones: [
+    { amount: 20_000_000n, released: false, released_amount: 0n, deadline: 0n },
+  ],
+};
+
+/**
+ * A funded, undisputed escrow with one milestone still to release — the only
+ * state a dispute can be opened from.
+ *
+ * `BigInt(id)` on a non-numeric `:id` is #106 (tracked separately): the guard
+ * that should catch it is unreachable while the conversion throws, so nothing
+ * here asserts the crash.
+ */
+const ACTIVE = {
+  ...COMPLETED,
+  status: "Active",
+  milestones: [
+    { amount: 20_000_000n, released: false, released_amount: 0n, deadline: 0n },
+  ],
+};
+
+/** Current unix seconds — the contract compares against its own ledger clock. */
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+
 beforeEach(() => {
   h.wallet.publicKey = CLIENT;
   h.escrow.getEscrow.mockReset();
   h.escrow.getEscrow.mockResolvedValue(COMPLETED);
   h.escrow.submitRating.mockReset();
   h.escrow.submitRating.mockResolvedValue({ hash: "HASH", result: undefined });
+  h.escrow.reclaimDisputed.mockReset();
+  h.escrow.reclaimDisputed.mockResolvedValue({ hash: "RECLAIMHASH", result: undefined });
+  h.escrow.getDisputeDeadline.mockReset();
+  h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() + 3 * 86_400));
   h.escrow.isPending.mockReset();
   h.escrow.isPending.mockReturnValue(false);
   h.escrow.hasPendingWrite.mockReset();
@@ -75,6 +113,15 @@ beforeEach(() => {
   h.fetchJobs.mockResolvedValue([]);
   h.authenticate.mockClear();
   h.recordRating.mockClear();
+  h.escrow.openDispute.mockReset();
+  h.escrow.openDispute.mockResolvedValue({ hash: "DISPUTEHASH", disputeId: 3n });
+  h.createDispute.mockReset();
+  h.createDispute.mockResolvedValue({
+    dispute: { id: "dispute-1", jobId: "job-1", onChainId: null, status: "RAISED", reason: "x" },
+    xdr: "open-dispute-xdr",
+  });
+  h.linkDisputeId.mockReset();
+  h.linkDisputeId.mockResolvedValue({ id: "dispute-1", onChainId: 3 });
 });
 
 afterEach(() => cleanup());
@@ -92,6 +139,112 @@ function submitRatingForm(): void {
   if (!form) throw new Error("rating form not found");
   fireEvent.submit(form);
 }
+
+/** The same escrow once its only milestone has been paid out. */
+const ACTIVE_RELEASED = {
+  ...ACTIVE,
+  milestones: [
+    { amount: 20_000_000n, released: true, released_amount: 20_000_000n, deadline: 0n },
+  ],
+};
+
+describe("JobDetail actions", () => {
+  beforeEach(() => {
+    h.escrow.releaseMilestone.mockReset();
+    h.escrow.releaseMilestone.mockResolvedValue({ hash: "RELEASEHASH", result: undefined });
+    h.escrow.openDispute.mockReset();
+    h.escrow.openDispute.mockResolvedValue({ hash: "DISPUTEHASH", result: undefined });
+  });
+
+  it("releases a milestone for the client and links the transaction", async () => {
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    render(<JobDetail />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Release" }));
+
+    await waitFor(() => expect(h.escrow.releaseMilestone).toHaveBeenCalledWith(7n, 0));
+    const tx = await screen.findByRole("link", { name: /RELEASE/ });
+    expect(tx.getAttribute("href")).toBe("https://stellar.expert/tx/RELEASEHASH");
+  });
+
+  it("does not offer a release to the freelancer", async () => {
+    // Only the client can move funds out of escrow; the contract enforces it, but
+    // the button should never be shown either.
+    h.wallet.publicKey = FREELANCER;
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Release" })).toBeNull();
+  });
+
+  it("does not offer a release once the job is no longer active", async () => {
+    h.escrow.getEscrow.mockResolvedValue(COMPLETED);
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Release" })).toBeNull();
+  });
+
+  it("does not offer a release for an already released milestone", async () => {
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE_RELEASED);
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Release" })).toBeNull();
+  });
+
+  it("freezes every action while a dispute is open", async () => {
+    h.escrow.getEscrow.mockResolvedValue(DISPUTED);
+    h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() + 3 * 86_400));
+    render(<JobDetail />);
+
+    await screen.findByText(/frozen pending arbitration/i);
+    expect(screen.queryByRole("button", { name: "Release" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open dispute" })).toBeNull();
+  });
+
+  it("opens a dispute for a participant while the escrow is active", async () => {
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    render(<JobDetail />);
+
+    await screen.findByRole("button", { name: "Open dispute" });
+    // The action is gated on a reason the panel can rule on (#86), so the
+    // participant has to give one before the contract call can happen.
+    const reason = "The milestone was never delivered";
+    fireEvent.change(screen.getByLabelText(/Reason for the dispute/), {
+      target: { value: reason },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dispute" }));
+
+    await waitFor(() => expect(h.escrow.openDispute).toHaveBeenCalledWith(7n, reason));
+  });
+
+  it("does not offer a dispute to a wallet with no stake in the job", async () => {
+    h.wallet.publicKey = "GSTRANGER";
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Open dispute" })).toBeNull();
+  });
+});
+
+describe("JobDetail load state", () => {
+  it("explains a failed read instead of rendering an empty page", async () => {
+    h.escrow.getEscrow.mockResolvedValue(undefined);
+    render(<JobDetail />);
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/could not load escrow/i);
+  });
+
+  it("shows the error the hook surfaced", async () => {
+    h.escrow.error = "Could not reach the network.";
+    render(<JobDetail />);
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not reach the network.");
+  });
+});
 
 describe("JobDetail rating", () => {
   it("offers the participant a rating form on a completed job", async () => {
@@ -174,5 +327,150 @@ describe("JobDetail rating", () => {
 
     await screen.findByText("Milestones");
     expect(screen.queryByRole("button", { name: "Submit rating" })).toBeNull();
+  });
+});
+
+describe("JobDetail dispute timelock", () => {
+  it("disables the reclaim before the deadline and shows the time remaining", async () => {
+    h.escrow.getEscrow.mockResolvedValue(DISPUTED);
+    h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() + 3 * 86_400));
+
+    render(<JobDetail />);
+
+    const button = await screen.findByRole("button", { name: "Reclaim after timeout" });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Reclaimable only after/i)).toBeTruthy();
+    expect(screen.getByText(/left\)/i)).toBeTruthy();
+    expect(h.escrow.reclaimDisputed).not.toHaveBeenCalled();
+  });
+
+  it("enables the reclaim for the client once the deadline passes and submits it", async () => {
+    h.escrow.getEscrow.mockResolvedValue(DISPUTED);
+    h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() - 10));
+
+    render(<JobDetail />);
+
+    const button = await screen.findByRole("button", { name: "Reclaim after timeout" });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText(/timelock has passed/i)).toBeTruthy();
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(h.escrow.reclaimDisputed).toHaveBeenCalledWith(7n));
+    // The transaction is linked on the explorer like every other write.
+    const tx = await screen.findByRole("link", { name: /RECLAIM/ });
+    expect(tx.getAttribute("href")).toBe("https://stellar.expert/tx/RECLAIMHASH");
+  });
+
+  it("shows the frozen notice but no reclaim action to a non-client", async () => {
+    h.wallet.publicKey = FREELANCER;
+    h.escrow.getEscrow.mockResolvedValue(DISPUTED);
+    h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() - 10));
+
+    render(<JobDetail />);
+
+    await screen.findByText(/frozen pending arbitration/i);
+    expect(screen.queryByRole("button", { name: "Reclaim after timeout" })).toBeNull();
+  });
+});
+
+describe("JobDetail opening a dispute", () => {
+  const REASON = "The final milestone was never delivered";
+
+  /** Render an Active escrow and wait for the dispute form. */
+  async function renderActive(): Promise<void> {
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    render(<JobDetail />);
+    await screen.findByRole("button", { name: "Open dispute" });
+  }
+
+  function disputeForm(): HTMLFormElement {
+    const form = screen.getByRole("button", { name: "Open dispute" }).closest("form");
+    if (!form) throw new Error("dispute form not found");
+    return form;
+  }
+
+  it("withholds the action until the reason is one the panel can act on", async () => {
+    await renderActive();
+
+    const submit = screen.getByRole("button", { name: "Open dispute" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+
+    // Submitting anyway must not freeze the escrow: the handler re-checks, so a
+    // form that bypassed the button (or a future refactor of it) cannot raise a
+    // dispute with a reason too short for the API to accept.
+    fireEvent.change(screen.getByLabelText(/Reason for the dispute/), {
+      target: { value: "too short" },
+    });
+    fireEvent.submit(disputeForm());
+    expect(h.escrow.openDispute).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/Reason for the dispute/), {
+      target: { value: REASON },
+    });
+    expect((screen.getByRole("button", { name: "Open dispute" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
+  it("freezes the escrow, raises the dispute, then records the reason and the id", async () => {
+    h.fetchJobs.mockResolvedValue([
+      { id: "job-1", escrowId: 7, title: "t", status: "ACTIVE", totalAmountUsdc: 1 },
+    ]);
+    await renderActive();
+
+    fireEvent.change(screen.getByLabelText(/Reason for the dispute/), {
+      target: { value: REASON },
+    });
+    fireEvent.submit(disputeForm());
+
+    // One user action, two contract calls: open_dispute freezes the escrow and
+    // raise mints the dispute the panel rules on (#86).
+    await waitFor(() => expect(h.escrow.openDispute).toHaveBeenCalledWith(7n, REASON));
+    // The reason and the returned id land on the same off-chain row.
+    await waitFor(() =>
+      expect(h.createDispute).toHaveBeenCalledWith(
+        { jobId: "job-1", reason: REASON },
+        "jwt-1",
+      ),
+    );
+    await waitFor(() => expect(h.linkDisputeId).toHaveBeenCalledWith("dispute-1", 3n, "jwt-1"));
+
+    const tx = await screen.findByRole("link", { name: /DISPUTEHASH/ });
+    expect(tx.getAttribute("href")).toBe("https://stellar.expert/tx/DISPUTEHASH");
+  });
+
+  it("says the dispute is on-chain when the off-chain record could not be saved", async () => {
+    h.fetchJobs.mockResolvedValue([
+      { id: "job-1", escrowId: 7, title: "t", status: "ACTIVE", totalAmountUsdc: 1 },
+    ]);
+    h.createDispute.mockRejectedValue(new Error("Could not record the dispute (HTTP 500)"));
+    await renderActive();
+
+    fireEvent.change(screen.getByLabelText(/Reason for the dispute/), {
+      target: { value: REASON },
+    });
+    fireEvent.submit(disputeForm());
+
+    // The money is already frozen, so the failure must not read as "nothing
+    // happened" — only as "the reason was not stored".
+    await screen.findByText(/dispute is on-chain, but its record was not saved/i);
+    await screen.findByRole("link", { name: /DISPUTEHASH/ });
+  });
+
+  it("still records the dispute when the job has no off-chain record yet", async () => {
+    // `findJobIdByEscrow` returns null: the API has no row to attach to, and the
+    // on-chain dispute is unaffected.
+    h.fetchJobs.mockResolvedValue([]);
+    await renderActive();
+
+    fireEvent.change(screen.getByLabelText(/Reason for the dispute/), {
+      target: { value: REASON },
+    });
+    fireEvent.submit(disputeForm());
+
+    await waitFor(() => expect(h.escrow.openDispute).toHaveBeenCalledWith(7n, REASON));
+    expect(h.createDispute).not.toHaveBeenCalled();
+    await screen.findByText(/no off-chain record, so the reason was not stored/i);
   });
 });

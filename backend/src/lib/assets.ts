@@ -61,4 +61,28 @@ export function fromBaseUnits(base: bigint, decimals: number): string {
     decimals > 0 ? digits.slice(digits.length - decimals).replace(/0+$/, "") : "";
   const value = fraction ? `${whole}.${fraction}` : whole;
   return negative ? `-${value}` : value;
+ * Sum decimal amounts exactly, returning the total in the asset's integer base
+ * units.
+ *
+ * Money must never be added as JavaScript numbers: `0.1 + 0.2` is
+ * `0.30000000000000004`, and because `Job.totalAmountUsdc` is a `DECIMAL(65,30)`
+ * column that error is stored verbatim and returned to every client. Converting
+ * each amount to base units first — an exact `bigint` — makes the sum exact.
+ */
+export function sumAmounts(amounts: Array<number | string>, decimals: number): bigint {
+  return amounts.reduce<bigint>((total, amount) => total + toBaseUnits(amount, decimals), 0n);
+}
+
+/**
+ * Render integer base units as a plain decimal string — the exact form to store
+ * in a Prisma `Decimal` column or return to a client. `3000000` at 7 decimals
+ * becomes `"0.3"`; trailing fractional zeros are trimmed.
+ */
+export function formatAmount(base: bigint, decimals: number): string {
+  const negative = base < 0n;
+  const digits = (negative ? -base : base).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals);
+  const fraction =
+    decimals > 0 ? digits.slice(digits.length - decimals).replace(/0+$/, "") : "";
+  return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
 }

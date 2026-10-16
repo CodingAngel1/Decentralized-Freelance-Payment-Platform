@@ -18,7 +18,15 @@ ENV VITE_NETWORK=$VITE_NETWORK \
 
 RUN npm run build
 
-FROM nginx:alpine
-COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+# Unprivileged nginx (runs as `nginx`, uid 101): pid file and temp paths live
+# under /tmp and the master process never holds root, so a bug in a request
+# path is contained to an unprivileged user (CIS 4.1). It listens on 8080
+# because a non-root process cannot bind port 80 — see nginx.conf and the
+# port mapping in docker-compose.yml.
+FROM nginxinc/nginx-unprivileged:alpine
+COPY --from=builder --chown=nginx:nginx /app/dist /usr/share/nginx/html
+COPY --chown=nginx:nginx nginx.conf /etc/nginx/conf.d/default.conf
+# Stated explicitly (not just inherited from the base image) so the intent is
+# visible — and testable — right here.
+USER nginx
+EXPOSE 8080

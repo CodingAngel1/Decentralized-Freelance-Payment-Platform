@@ -21,7 +21,10 @@ in scope:
 Out of scope:
 
 - Issues that require mainnet deployment or real funds
-- Third-party dependencies (please report upstream)
+- Third-party dependencies (please report upstream). This is a policy for
+  reports, not a gap in coverage: CI runs `npm audit` / `cargo audit` on every
+  push and PR, and bumps are landed manually — see *Dependency security* in
+  [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 - Denial of service via expensive-but-authorized calls on testnet
 
 ## Reporting a vulnerability

@@ -25,6 +25,7 @@ import {
   pollTransaction,
   readContract,
   scAddress,
+  scString,
   scU32,
   scU64,
   server,
@@ -63,12 +64,21 @@ export interface ReputationView {
 export interface SubmitResult {
   hash: string;
   result: unknown;
-}
-
-/** Result of `createAndFund`; `hash` is the (last) `fund` transaction. */
+}  /** Result of `createAndFund`; `hash` is the (last) `fund` transaction. */
 export interface CreateAndFundResult {
   id: bigint;
   hash: string;
+}
+
+/**
+ * Result of `openDispute`. `hash` is the `dispute.raise` transaction (the one
+ * that actually creates the dispute); `disputeId` is the id the contract
+ * returned for it, which is what `POST /api/disputes/:id/sync` records and what
+ * `dispute.arbitrate` needs to resolve the dispute.
+ */
+export interface OpenDisputeResult {
+  hash: string;
+  disputeId: bigint;
 }
 
 /** The kinds of operation the hook can have in flight. */
@@ -76,11 +86,12 @@ export type OpKind =
   | "create"
   | "release"
   | "dispute"
+  | "reclaim"
   | "read"
   | "reputation"
   | "rate";
 
-const WRITE_KINDS: OpKind[] = ["create", "release", "dispute", "rate"];
+const WRITE_KINDS: OpKind[] = ["create", "release", "dispute", "reclaim", "rate"];
 
 /**
  * The last operation that failed, so a caller can react to a specific contract
@@ -217,13 +228,64 @@ export function useEscrow() {
     [run, submit],
   );
 
-  /** Either party freezes the escrow by opening a dispute. */
+  /**
+   * Either party freezes the escrow by opening a dispute, then raises it.
+   *
+   * Two transactions on two contracts, and the order is not interchangeable:
+   *
+   *   1. `escrow.open_dispute(escrow_id, initiator)` — escrow: Active → Disputed.
+   *   2. `dispute.raise(escrow_id, escrow_contract, raised_by, reason)` — creates
+   *      the dispute the panel rules on and returns its id.
+   *
+   * `open_dispute` alone leaves the escrow frozen with no on-chain dispute, so
+   * `dispute.arbitrate` has no id to resolve and `POST /api/disputes/:id/resolve`
+   * is unreachable (issue #86). Raising first is not an option: `dispute.raise`
+   * cross-calls the escrow and refuses while it is not yet `Disputed`
+   * (`EscrowNotDisputed`).
+   *
+   * The reason goes to the contract, which stores it, and the returned id is
+   * handed back so the caller can record it against the off-chain row.
+   */
   const openDispute = useCallback(
-    (escrowId: bigint) =>
-      run("dispute", `${escrowId}`, (pk) =>
-        submit(pk, CONTRACT_ADDRESSES.escrow, "open_dispute", [
+    (escrowId: bigint, reason: string) =>
+      run("dispute", `${escrowId}`, async (pk): Promise<OpenDisputeResult> => {
+        await submit(pk, CONTRACT_ADDRESSES.escrow, "open_dispute", [
           scU64(escrowId),
           scAddress(pk),
+        ]);
+        const raised = await submit(pk, CONTRACT_ADDRESSES.dispute, "raise", [
+          scU64(escrowId),
+          scAddress(CONTRACT_ADDRESSES.escrow),
+          scAddress(pk),
+          scString(reason),
+        ]);
+        // The id comes from the simulation of the call that was just submitted:
+        // the contract's return value does not survive submission, and it is the
+        // only way to learn the id without waiting for the indexer to see the
+        // `raised` event.
+        return {
+          hash: raised.hash,
+          disputeId: BigInt(raised.result as bigint | number | string),
+        };
+      }),
+    [run, submit],
+  );
+
+  /**
+   * The client reclaims a `Disputed` escrow once the dispute timelock has
+   * passed with no ruling (the panel-never-rules escape hatch).
+   *
+   * `escrow.reclaim_after_dispute_timeout(escrow_id)` requires the client's auth
+   * on-chain and rejects the call while the escrow is not `Disputed`
+   * (`InvalidStatus`) or before the deadline (`DisputeTimeoutNotReached`). The
+   * deadline is the `dispute_deadline` read below. On success the escrow moves
+   * to `Refunded`.
+   */
+  const reclaimDisputed = useCallback(
+    (escrowId: bigint) =>
+      run("reclaim", `${escrowId}`, (pk) =>
+        submit(pk, CONTRACT_ADDRESSES.escrow, "reclaim_after_dispute_timeout", [
+          scU64(escrowId),
         ]),
       ),
     [run, submit],
@@ -259,6 +321,22 @@ export function useEscrow() {
     [run],
   );
 
+  /**
+   * Read the dispute timelock deadline (unix seconds) for an escrow (view).
+   *
+   * Set when `open_dispute` runs; the client may reclaim once the ledger clock
+   * is past it. Returns `NotInitialized` for an escrow that never opened one.
+   */
+  const getDisputeDeadline = useCallback(
+    (escrowId: bigint) =>
+      run("read", `deadline:${escrowId}`, (pk) =>
+        readContract<bigint>(pk, CONTRACT_ADDRESSES.escrow, "dispute_deadline", [
+          scU64(escrowId),
+        ]),
+      ),
+    [run],
+  );
+
   /** Read a user's reputation aggregate (view). */
   const getReputation = useCallback(
     (address: string) =>
@@ -274,8 +352,10 @@ export function useEscrow() {
     createAndFund,
     releaseMilestone,
     openDispute,
+    reclaimDisputed,
     submitRating,
     getEscrow,
+    getDisputeDeadline,
     getReputation,
     pendingOps,
     isPending,

@@ -102,7 +102,7 @@ frontend/        # React 18 + TypeScript + Vite
 backend/         # Express + Prisma + Zod
 scripts/         # testnet deploy + demo
 deployments/     # deployed contract IDs (testnet)
-docs/            # testnet notes; wave-issues/ holds the issue backlog
+docs/            # testnet notes; wave-issues/ = design notes for issues #2-#18
 ```
 
 ---
@@ -125,10 +125,9 @@ Freelancer ───────────────────────
    │                                    raise() ── verify ──────►│  (escrow must be Disputed;
    │                                              ── cross-call ──┘   caller must be a party)
 DisputeContract ◄── approve()* ── Arbitrator panel
-   │                  arbitrate() (needs M-of-N approvals)
-   │
-   │  submit(rater, ratee, escrow_id, score) ── verify completed + participants
-   └──────────────────────────────────────────────► ReputationContract
+                      arbitrate() (needs M-of-N approvals)
+
+Client / Freelancer ── submit(rater, ratee, escrow_id, score) ── verify completed + participants ──► ReputationContract
 ```
 
 State machine (escrow):
@@ -149,12 +148,15 @@ Details of the dispute panel and timelock are in
 | Contract | Function | Notes |
 |----------|----------|-------|
 | escrow | `init(admin, dispute_contract)` | one-time; admin can rotate the dispute contract |
+| escrow | `set_dispute_contract(dispute_contract)` | admin-only; rotates the dispute contract |
 | escrow | `create(client, freelancer, token, milestones, expiry)` | validates amounts/expiry; returns id |
+| escrow | `update_milestones(escrow_id, milestones)` | client-only, while still `Created` (before funding); re-validates and recomputes the total |
 | escrow | `fund(escrow_id)` | client deposits the total |
-| escrow | `release_milestone(escrow_id, index)` | client-only; completes the job on the last one |
+| escrow | `release_milestone(escrow_id, milestone_index)` | client-only; completes the job on the last one |
+| escrow | `release_partial(escrow_id, milestone_index, amount)` | client-only; pays part of a milestone and tracks `released_amount` |
 | escrow | `open_dispute(escrow_id, initiator)` | either party; freezes the escrow and starts the dispute timelock |
 | escrow | `resolve(escrow_id, client_share, freelancer_share)` | **dispute contract only**; shares must sum to the funds held |
-| escrow | `reclaim_expired(escrow_id)` | client refund after expiry |
+| escrow | `reclaim_expired(escrow_id)` | client-only refund of the unreleased remainder after expiry; earlier releases are not clawed back |
 | escrow | `reclaim_after_dispute_timeout(escrow_id)` | client refund from `Disputed` once the dispute deadline passes |
 | escrow | `get(escrow_id)` / `dispute_contract()` / `dispute_deadline(escrow_id)` | views |
 | dispute | `init(arbitrators, threshold)` | one-time; every panel member authorizes |
@@ -165,6 +167,11 @@ Details of the dispute panel and timelock are in
 | reputation | `init(admin, escrow_contract)` | one-time |
 | reputation | `submit(rater, ratee, escrow_id, score)` | verified against escrow; 1–5 |
 | reputation | `get_aggregate(address)` / `get_rating(rater, escrow_id)` | views; aggregate is amount-weighted (see `docs/REPUTATION.md`) |
+
+The code is canonical: `contracts/*/src/lib.rs` is the source of truth for this
+table and for the one in `README.md`. If a table and the code disagree, trust the
+code and update the table — the PR checklist asks every PR to re-verify both
+copies against the contract source.
 
 All fallible functions return a typed `Result<_, _Error>` (see the `interface`
 crate for `EscrowError`). **No `assert!`/`unwrap` in production paths.**
@@ -206,10 +213,13 @@ contract function must ship with tests for both its success and failure paths.
 
 ```bash
 cd contracts && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test
-cd ../frontend && npm run lint && npx tsc --noEmit && npm run build
+cd ../frontend && npm run lint && npx tsc --noEmit && npm test && npm run build
+cd ../backend && npx prisma generate && npx tsc --noEmit && npm test
 ```
 
-That is exactly what CI runs.
+That is exactly what CI runs. The test steps are not optional: the frontend
+suite no longer passes `--passWithNoTests`, so a broken or emptied suite fails
+the build instead of reporting success on nothing.
 
 ---
 
@@ -258,7 +268,48 @@ larger into a new issue instead of growing the PR.
 Anything that would need a security audit to merge safely should be raised as a
 design issue first rather than a ready-to-merge task.
 
-The scoped backlog lives in [`docs/wave-issues/`](./docs/wave-issues/).
+Scoped work lives in the [issue tracker](https://github.com/vatal-system/Decentralized-Freelance-Payment-Platform/issues);
+the design notes behind issues #2-#18 live in
+[`docs/wave-issues/`](./docs/wave-issues/).
+
+---
+
+## Dependency security
+
+Three lockfiles are committed (`backend/package-lock.json`,
+`frontend/package-lock.json`, `contracts/Cargo.lock`), so a version only moves
+when something bumps it. Version updates are **manual** — Dependabot is
+intentionally not configured (`.github/dependabot.yml` was removed) — so a bump
+happens when someone runs `npm audit fix` / `cargo update` or lands a PR that
+changes a manifest. One mechanism guards that:
+
+- **The `Dependencies – vulnerability scan` job** runs
+  `npm audit --audit-level=high --omit=dev` for both packages and
+  `cargo audit` for the contracts on every push and PR.
+
+**The scan is advisory today, not blocking.** Both lockfiles carry known
+high/critical advisories that need a dependency bump, not a CI change, so the
+steps use `continue-on-error: true`: the report is visible in the run (and in the
+check's annotations) without failing every unrelated PR. Make it blocking —
+delete `continue-on-error` — once `npm audit --audit-level=high --omit=dev` and
+`cargo audit` are both clean.
+
+`--omit=dev` deliberately audits only what ships. Build/test tooling (vite,
+vitest, eslint, tsx) is not scanned there because it never runs in production;
+`cargo audit` does cover the workspace's dev-dependencies, because the contract
+tests compile the same crates the wasm build does.
+
+Handling a new advisory:
+
+1. Prefer a bump: `npm audit fix` for a non-breaking fix, or a small PR that
+   changes the manifest and the lockfile together.
+2. If the finding is in a production dependency, treat it as a bug rather than
+   noise — the backend verifies wallet signatures and holds JWTs, so a parsing or
+   network flaw in one of its dependencies is reachable from the internet.
+3. Only after 1 and 2 have been tried, and only with a link to the upstream
+   advisory plus a tracking issue, pin or override the affected version.
+4. Never silence a finding by removing the step or lowering `--audit-level` in a
+   pull request.
 
 ---
 

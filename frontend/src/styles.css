@@ -194,3 +194,29 @@ fieldset {
   padding: 0.6rem 0;
   border-bottom: 1px solid var(--border);
 }
+
+/* --- Addresses ---------------------------------------------------------- */
+
+/* A full G… address is 56 characters and must not stretch a list row. */
+.address-field code {
+  word-break: break-all;
+}
+
+.address-field button {
+  margin-left: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.address-field-qr {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.qr-code {
+  display: block;
+}
