@@ -1,5 +1,6 @@
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, screen, waitFor } from "@testing-library/react";
 
 // Hoisted so the vi.mock factories below can reference them.
 const h = vi.hoisted(() => ({
@@ -37,6 +38,7 @@ vi.mock("../lib/stellar", () => ({
   scU32: vi.fn(() => ({})),
   scU64: vi.fn(() => ({})),
   server: { sendTransaction: h.sendTransaction },
+  explorerTxUrl: (hash: string) => `https://stellar.expert/explorer/testnet/tx/${hash}`,
 }));
 
 vi.mock("@stellar/stellar-sdk", () => ({
@@ -48,6 +50,26 @@ vi.mock("@stellar/stellar-sdk", () => ({
 import { useEscrow } from "./useEscrow";
 // The mocked helpers, so we can assert how the arguments are encoded.
 import { scString, scU32, scU64 } from "../lib/stellar";
+import { ToastProvider } from "./ToastProvider";
+import Toaster from "../components/Toaster";
+
+/**
+ * Every hook under test runs inside the provider the app mounts, with the
+ * toaster attached, so the lifecycle assertions below read the same DOM a user
+ * would (issue #60).
+ */
+function Wrapper({ children }: { children: ReactNode }) {
+  return (
+    <ToastProvider>
+      {children}
+      <Toaster />
+    </ToastProvider>
+  );
+}
+
+function renderEscrow() {
+  return renderHook(() => useEscrow(), { wrapper: Wrapper });
+}
 
 beforeEach(() => {
   h.wallet.publicKey = "GCLIENT";
@@ -59,6 +81,8 @@ beforeEach(() => {
   h.buildContractCall.mockResolvedValue({ xdr: "tx-xdr", result: 0n });
   h.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "HASH" });
   h.pollTransaction.mockResolvedValue({ status: "SUCCESS" });
+  h.wallet.sign.mockReset();
+  h.wallet.sign.mockResolvedValue("signed-xdr");
 });
 
 afterEach(() => cleanup());
@@ -79,7 +103,7 @@ function deferredBuild() {
 describe("useEscrow transaction state", () => {
   it("does not start the same target twice (double-submit guard)", async () => {
     const settle = deferredBuild();
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     let first: Promise<unknown> | undefined;
     let second: Promise<unknown> | undefined;
@@ -104,7 +128,7 @@ describe("useEscrow transaction state", () => {
 
   it("scopes pending state to the affected target, not unrelated ones", async () => {
     const settle = deferredBuild();
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     act(() => {
       void result.current.releaseMilestone(1n, 0);
@@ -122,7 +146,7 @@ describe("useEscrow transaction state", () => {
   });
 
   it("submits the dispute-timelock reclaim as escrow.reclaim_after_dispute_timeout", async () => {
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     await act(async () => {
       await result.current.reclaimDisputed(7n);
@@ -148,7 +172,7 @@ describe("useEscrow transaction state", () => {
     h.buildContractCall
       .mockResolvedValueOnce({ xdr: "open-xdr", result: 0n })
       .mockResolvedValueOnce({ xdr: "raise-xdr", result: 3n });
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     let opened: { hash: string; disputeId: bigint } | undefined;
     await act(async () => {
@@ -181,7 +205,7 @@ describe("useEscrow transaction state", () => {
     h.buildContractCall.mockRejectedValueOnce(
       new Error("HostError: Error(Contract, #8)"),
     );
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     await act(async () => {
       await result.current.openDispute(7n, "Milestone never delivered");
@@ -199,7 +223,7 @@ describe("useEscrow transaction state", () => {
 
   it("counts a dispute reclaim as a pending write so background polling pauses", async () => {
     const settle = deferredBuild();
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     act(() => {
       void result.current.reclaimDisputed(1n);
@@ -216,7 +240,7 @@ describe("useEscrow transaction state", () => {
 
   it("reads the dispute deadline through the escrow view", async () => {
     h.readContract.mockResolvedValueOnce(1_700_000_000n);
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     let deadline: bigint | undefined;
     await act(async () => {
@@ -239,7 +263,7 @@ describe("useEscrow transaction state", () => {
 
   it("counts a rating as a pending write so background polling pauses", async () => {
     const settle = deferredBuild();
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     act(() => {
       void result.current.submitRating(7n, "GRATEE", 5);
@@ -255,7 +279,7 @@ describe("useEscrow transaction state", () => {
   });
 
   it("submits a rating as reputation.submit with a u32 score", async () => {
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     await act(async () => {
       await result.current.submitRating(7n, "GRATEE", 5);
@@ -278,7 +302,7 @@ describe("useEscrow transaction state", () => {
 
   it("surfaces AlreadyRated through lastFailure and a friendly message", async () => {
     h.buildContractCall.mockRejectedValueOnce(new Error("HostError: Error(Contract, #5)"));
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     await act(async () => {
       await result.current.submitRating(7n, "GRATEE", 5);
@@ -292,7 +316,7 @@ describe("useEscrow transaction state", () => {
 
   it("reports a non-contract failure without a code", async () => {
     h.buildContractCall.mockRejectedValueOnce(new Error("wallet not connected"));
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     await act(async () => {
       await result.current.submitRating(7n, "GRATEE", 5);
@@ -304,7 +328,7 @@ describe("useEscrow transaction state", () => {
 
   it("clears a previous error after a subsequent successful read", async () => {
     h.buildContractCall.mockRejectedValueOnce(new Error("boom"));
-    const { result } = renderHook(() => useEscrow());
+    const { result } = renderEscrow();
 
     await act(async () => {
       await result.current.releaseMilestone(1n, 0);
@@ -316,5 +340,70 @@ describe("useEscrow transaction state", () => {
       await result.current.getEscrow(1n);
     });
     expect(result.current.error).toBeNull();
+  });
+});
+
+describe("useEscrow transaction toasts", () => {
+  it("walks a write through building → signing → confirmed with an explorer link", async () => {
+    // Hold each stage open in turn so the intermediate states are observable.
+    let settleBuild: (value: { xdr: string; result: unknown }) => void = () => {};
+    h.buildContractCall.mockImplementation(
+      () => new Promise((resolve) => (settleBuild = resolve)),
+    );
+    let settleSign: (value: string) => void = () => {};
+    h.wallet.sign.mockImplementation(() => new Promise((resolve) => (settleSign = resolve)));
+
+    const { result } = renderEscrow();
+
+    let pending: Promise<unknown> | undefined;
+    act(() => {
+      pending = result.current.releaseMilestone(1n, 0);
+    });
+    expect(screen.getByText("Building release milestone transaction…")).toBeTruthy();
+
+    // Build + simulate resolves: the toast moves to the wallet prompt.
+    await act(async () => {
+      settleBuild({ xdr: "tx-xdr", result: undefined });
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Awaiting signature for release milestone…")).toBeTruthy(),
+    );
+
+    await act(async () => {
+      settleSign("signed-xdr");
+      await pending;
+    });
+
+    // One toast, now confirmed and linked to the transaction.
+    expect(screen.getByText("release milestone confirmed")).toBeTruthy();
+    const link = screen.getByRole("link", { name: /stellar\.expert/i }) as HTMLAnchorElement;
+    expect(link.href).toBe("https://stellar.expert/explorer/testnet/tx/HASH");
+  });
+
+  it("surfaces a contract failure with the mapped message", async () => {
+    h.buildContractCall.mockRejectedValueOnce(new Error("HostError: Error(Contract, #3)"));
+    const { result } = renderEscrow();
+
+    await act(async () => {
+      await result.current.releaseMilestone(1n, 0);
+    });
+
+    // Escrow #3 is `Unauthorized`: the toast carries the same mapped text the
+    // inline error does, rather than the raw host string.
+    expect(screen.getByRole("alert").textContent).toContain(
+      "You're not authorized to perform this action.",
+    );
+    expect(result.current.error).toBe("You're not authorized to perform this action.");
+  });
+
+  it("does not toast a read", async () => {
+    h.readContract.mockResolvedValueOnce({ status: "Active" });
+    const { result } = renderEscrow();
+
+    await act(async () => {
+      await result.current.getEscrow(1n);
+    });
+
+    expect(screen.queryByLabelText("Transaction notifications")).toBeNull();
   });
 });

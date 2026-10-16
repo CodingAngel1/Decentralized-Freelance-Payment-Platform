@@ -12,8 +12,10 @@
 
 import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { WalletProvider } from "./hooks/WalletProvider";
+import { ToastProvider } from "./hooks/ToastProvider";
 import { useWallet } from "./hooks/wallet-context";
 import AddressField from "./components/AddressField";
+import Toaster from "./components/Toaster";
 import Dashboard from "./pages/Dashboard";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
@@ -44,15 +46,20 @@ function Nav() {
 export default function App() {
   return (
     <WalletProvider>
-      <BrowserRouter>
-        <Nav />
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/post" element={<PostJob />} />
-          <Route path="/jobs/:id" element={<JobDetail />} />
-          <Route path="/profile/:address" element={<Profile />} />
-        </Routes>
-      </BrowserRouter>
+      <ToastProvider>
+        <BrowserRouter>
+          <Nav />
+          {/* One toaster for every route: transaction feedback must survive
+              navigation, which the inline-only messages did not (issue #60). */}
+          <Toaster />
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/post" element={<PostJob />} />
+            <Route path="/jobs/:id" element={<JobDetail />} />
+            <Route path="/profile/:address" element={<Profile />} />
+          </Routes>
+        </BrowserRouter>
+      </ToastProvider>
     </WalletProvider>
   );
 }
