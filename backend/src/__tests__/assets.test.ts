@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { fromBaseUnits, getAsset, toBaseUnits, UnknownAssetError } from "../lib/assets";
 import {
   formatAmount,
   formatBaseUnitsForAsset,
@@ -26,6 +27,26 @@ describe("asset registry", () => {
   });
 });
 
+describe("fromBaseUnits", () => {
+  const decimals = getAsset("USDC").decimals;
+
+  it("renders base units as a decimal string", () => {
+    expect(fromBaseUnits(10_000_000n, decimals)).toBe("1");
+    expect(fromBaseUnits(15_000_000n, decimals)).toBe("1.5");
+    expect(fromBaseUnits(25_000_000n, decimals)).toBe("2.5");
+    // Below one whole unit, and a single base unit.
+    expect(fromBaseUnits(1n, decimals)).toBe("0.0000001");
+    expect(fromBaseUnits(0n, decimals)).toBe("0");
+  });
+
+  it("round-trips through toBaseUnits", () => {
+    for (const amount of ["1", "2.5", "0.1", "1234.5678901", "0.0000001"]) {
+      expect(fromBaseUnits(toBaseUnits(amount, decimals), decimals)).toBe(amount);
+    }
+  });
+
+  it("handles an asset with no fractional part", () => {
+    expect(fromBaseUnits(1_000n, 0)).toBe("1000");
 describe("exact money arithmetic", () => {
   const decimals = getAsset("USDC").decimals;
 

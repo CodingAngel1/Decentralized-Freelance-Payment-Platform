@@ -48,6 +48,7 @@
  *   Re-run the affected event by hand once the bug is fixed, then delete the row.
  */
 
+import type { PrismaClient } from "@prisma/client";
 import { SorobanRpc } from "@stellar/stellar-sdk";
 import type { DisputeStatus, JobStatus, NotificationType } from "@prisma/client";
 import { config } from "./config";
@@ -57,6 +58,7 @@ import {
   KNOWN_EVENTS,
   decodeEventFields,
   decodeEventName,
+  eventEscrowId,
   type ContractEventLike,
 } from "./lib/events";
 
@@ -111,6 +113,22 @@ export interface SorobanEventSource {
 export interface CursorStore {
   get(): Promise<number>;
   set(ledger: number): Promise<void>;
+}
+
+/**
+ * The slice of Prisma the event handlers write through.
+ *
+ * Handlers receive this instead of closing over the module-level client, so a
+ * test can drive a whole event sequence against an in-memory fake and assert the
+ * resulting job / milestone / dispute rows without a database.
+ */
+export interface IndexerStore {
+  job: Pick<PrismaClient["job"], "findUnique" | "update" | "updateMany">;
+  milestone: Pick<PrismaClient["milestone"], "update" | "updateMany">;
+  dispute: Pick<PrismaClient["dispute"], "updateMany" | "upsert">;
+  /** Rating slice, shaped like `RatedStores` so `applyRatedEvent` accepts it. */
+  user: RatedStores["user"];
+  rating: RatedStores["rating"];
 }
 
 export function startIndexer() {
@@ -336,6 +354,21 @@ export async function recordDeadLetter(
 // ---------------------------------------------------------------------------
 
 /**
+ * Apply one decoded event to the database. Exported so tests can drive a
+ * sequence of events through the real handlers against a fake store.
+ */
+export async function dispatchEvent(
+  event: ContractEventLike,
+  store: IndexerStore = prisma,
+): Promise<void> {
+  const name = decodeEventName(event);
+  if (!name || !KNOWN_EVENTS.has(name)) return; // unknown events are ignored
+
+  const data = decodeEventData(event);
+  // The id lives in the data map for `created`/`funded` and in the `#[topic]`
+  // field for every other event (see lib/events.ts).
+  const escrowId = eventEscrowId(event);
+
  * Each event's `#[topic]` data fields, in `topic[1..]` order (docs/EVENTS.md).
  *
  * `created` and `funded` are deliberately absent: their topic is the client
@@ -380,29 +413,37 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
 
   switch (name) {
     case "created":
-      await handleCreated(data);
+      await handleCreated(escrowId, store);
       break;
     case "funded":
-      await handleFunded(data);
+      await handleFunded(escrowId, store);
+      break;
+    case "milestones_updated":
+      await handleMilestonesUpdated(escrowId, data, store);
       break;
     case "milestone_released":
-      await handleMilestoneReleased(data);
+      await handleMilestoneReleased(escrowId, data, store);
       break;
     case "dispute_opened":
+      await handleDisputeOpened(escrowId, store);
       await handleDisputeOpened(disputeStores(), data);
       break;
     case "resolved":
     case "dispute_resolved":
-      await handleResolved(data);
+      await handleResolved(escrowId, store);
       break;
     case "refunded":
+      await handleRefunded(escrowId, store);
+      break;
+    case "raised":
+      await handleRaised(escrowId, data, store);
       await handleRefunded(disputeStores(), data);
       break;
     case "raised":
       await handleRaised(disputeStores(), data);
       break;
     case "rated":
-      await handleRated(data);
+      await handleRated(escrowId, data, store);
       break;
     default:
       // milestones_updated / approved / dispute_contract_updated do not
@@ -466,22 +507,52 @@ async function notifyParticipants(
 async function handleCreated(data: Record<string, unknown>): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
-  await prisma.job.updateMany({ where: { escrowId }, data: { status: "CREATED" } });
+  await store.job.updateMany({ where: { escrowId }, data: { status: "CREATED" } });
 }
 
-async function handleFunded(data: Record<string, unknown>): Promise<void> {
-  const escrowId = asBigInt(data.escrow_id);
+async function handleFunded(escrowId: bigint | null, store: IndexerStore): Promise<void> {
   if (escrowId === null) return;
   await prisma.job.updateMany({ where: { escrowId }, data: { status: "ACTIVE" } });
   await notifyParticipants(escrowId, "FUNDED", "Escrow Funded", "Escrow has been funded.");
 }
 
-async function handleMilestoneReleased(data: Record<string, unknown>): Promise<void> {
-  const escrowId = asBigInt(data.escrow_id);
+/**
+ * `update_milestones` replaces the whole breakdown and emits only `count` and
+ * `total_amount` — no per-milestone amounts, so the indexer cannot rebuild the
+ * rows from the event alone. It *can* reconcile the total, which it does here;
+ * the rows themselves are written by the client through
+ * `PUT /api/escrow/:escrowId/milestones` once the transaction confirms.
+ *
+ * Applying the total here means the off-chain total cannot drift even if that
+ * follow-up call never happens.
+ */
+async function handleMilestonesUpdated(
+  escrowId: bigint | null,
+  data: Record<string, unknown>,
+  store: IndexerStore,
+): Promise<void> {
+  const totalAmount = asBigInt(data.total_amount);
+  if (escrowId === null || totalAmount === null || totalAmount <= 0n) return;
+
+  const job = await store.job.findUnique({ where: { escrowId } });
+  if (!job) return;
+
+  const decimals = ASSETS[String(job.asset).toUpperCase()]?.decimals ?? 7;
+  await store.job.update({
+    where: { id: job.id },
+    data: { totalAmountUsdc: fromBaseUnits(totalAmount, decimals) },
+  });
+}
+
+async function handleMilestoneReleased(
+  escrowId: bigint | null,
+  data: Record<string, unknown>,
+  store: IndexerStore,
+): Promise<void> {
   const index = asNumber(data.index);
   if (escrowId === null || index === null) return;
 
-  const job = await prisma.job.findUnique({
+  const job = await store.job.findUnique({
     where: { escrowId },
     include: { milestones: true },
   });
@@ -490,7 +561,7 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
   const milestone = job.milestones.find((m) => m.index === index);
   if (!milestone) return;
 
-  await prisma.milestone.update({
+  await store.milestone.update({
     where: { id: milestone.id },
     data: { status: "RELEASED", releasedAt: new Date() },
   });
@@ -499,7 +570,7 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
     (m) => m.id === milestone.id || m.status === "RELEASED",
   );
   if (allReleased) {
-    await prisma.job.update({ where: { id: job.id }, data: { status: "COMPLETED" } });
+    await store.job.update({ where: { id: job.id }, data: { status: "COMPLETED" } });
   }
 
   await notifyParticipants(
@@ -510,6 +581,12 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
   );
 }
 
+async function handleDisputeOpened(
+  escrowId: bigint | null,
+  store: IndexerStore,
+): Promise<void> {
+  if (escrowId === null) return;
+  await store.job.updateMany({ where: { escrowId }, data: { status: "DISPUTED" } });
 // ---------------------------------------------------------------------------
 // Dispute lifecycle
 // ---------------------------------------------------------------------------
@@ -577,17 +654,55 @@ export async function handleDisputeOpened(
   );
 }
 
-async function handleResolved(data: Record<string, unknown>): Promise<void> {
-  const escrowId = asBigInt(data.escrow_id);
+/**
+ * `escrow.resolve` pays out every milestone and marks the escrow Completed in
+ * one transaction, publishing only `resolved`. There are no per-milestone
+ * `milestone_released` events for that payout, so the milestones have to be
+ * settled here: otherwise an arbitrated job is COMPLETED while all of its
+ * milestones stay PENDING with `releasedAt: null` forever, and every
+ * milestone-derived view (progress, unreleased amount, earnings) is wrong for
+ * the one case where the database is furthest from the chain.
+ *
+ * `releasedAt` is the same instant for the job, the dispute and the milestones,
+ * because the contract changes them all in a single transaction.
+ */
+async function handleResolved(
+  escrowId: bigint | null,
+  store: IndexerStore,
+): Promise<void> {
   if (escrowId === null) return;
-  await prisma.job.updateMany({ where: { escrowId }, data: { status: "COMPLETED" } });
-  await prisma.dispute.updateMany({
+
+  const resolvedAt = new Date();
+  await store.job.updateMany({ where: { escrowId }, data: { status: "COMPLETED" } });
+  await store.dispute.updateMany({
     where: { job: { escrowId } },
-    data: { status: "RESOLVED", resolvedAt: new Date() },
+    data: { status: "RESOLVED", resolvedAt },
+  });
+  await store.milestone.updateMany({
+    where: { job: { escrowId } },
+    data: { status: "RELEASED", releasedAt: resolvedAt },
   });
   await notifyParticipants(escrowId, "RESOLVED", "Dispute Resolved", "The dispute has been resolved.");
 }
 
+async function handleRefunded(escrowId: bigint | null, store: IndexerStore): Promise<void> {
+  if (escrowId === null) return;
+  await store.job.updateMany({ where: { escrowId }, data: { status: "REFUNDED" } });
+}
+
+async function handleRaised(
+  escrowId: bigint | null,
+  data: Record<string, unknown>,
+  store: IndexerStore,
+): Promise<void> {
+  const disputeId = asBigInt(data.dispute_id);
+  if (escrowId === null || disputeId === null) return;
+
+  const job = await store.job.findUnique({ where: { escrowId } });
+  if (!job) return;
+
+  await store.dispute.upsert({
+    where: { onChainId: disputeId },
 /**
  * `refunded` is emitted by both `reclaim_expired` (Active → Refunded) and
  * `reclaim_after_dispute_timeout` (Disputed → Refunded).
@@ -700,8 +815,7 @@ interface RatedEvent {
   score: number;
 }
 
-function parseRatedEvent(data: Record<string, unknown>): RatedEvent | null {
-  const escrowId = asBigInt(data.escrow_id);
+function parseRatedEvent(escrowId: bigint, data: Record<string, unknown>): RatedEvent | null {
   const rater = asAddress(data.rater);
   const ratee = asAddress(data.ratee);
   const score = asNumber(data.score);
@@ -728,12 +842,16 @@ export type RatedOutcome =
  * A rating event whose escrow has no off-chain Job row is skipped: `Rating.jobId`
  * is required, and inventing a job from a rating would put fabricated data in
  * the listing. The event is logged so it can be reconciled by hand.
+ *
+ * `escrowId` is the event's `#[topic]` field, which is why it is passed in
+ * rather than read from the data map — see `eventEscrowId` in lib/events.ts.
  */
 export async function applyRatedEvent(
   db: RatedStores,
+  escrowId: bigint,
   data: Record<string, unknown>,
 ): Promise<RatedOutcome> {
-  const event = parseRatedEvent(data);
+  const event = parseRatedEvent(escrowId, data);
   if (!event) return { status: "skipped", reason: "malformed" };
 
   const job = await db.job.findUnique({ where: { escrowId: event.escrowId } });
@@ -769,8 +887,16 @@ export async function applyRatedEvent(
   return { status: "applied", jobId: job.id, score: event.score };
 }
 
-async function handleRated(data: Record<string, unknown>): Promise<void> {
-  const outcome = await applyRatedEvent(prisma as unknown as RatedStores, data);
+async function handleRated(
+  escrowId: bigint | null,
+  data: Record<string, unknown>,
+  store: IndexerStore,
+): Promise<void> {
+  // `escrow_id` is the event's #[topic] field, so it is not in the data map;
+  // without it the rating cannot be matched to a job.
+  if (escrowId === null) return;
+
+  const outcome = await applyRatedEvent(store as unknown as RatedStores, escrowId, data);
 
   if (outcome.status === "applied") {
     console.log("[indexer] rated job", outcome.jobId, "score", outcome.score);
@@ -779,7 +905,7 @@ async function handleRated(data: Record<string, unknown>): Promise<void> {
 
   if (outcome.reason === "unknown-job") {
     console.warn(
-      `[indexer] rated event for escrow ${String(data.escrow_id)} has no job record; ` +
+      `[indexer] rated event for escrow ${escrowId} has no job record; ` +
         "the rating cannot be stored until the job exists (see POST /api/escrow/sync/:jobId).",
     );
     return;
