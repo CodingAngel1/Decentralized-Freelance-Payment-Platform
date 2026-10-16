@@ -17,7 +17,11 @@ model User {
   id           String   @id @default(cuid())
   stellarAddress String @unique
   displayName  String?
+  email        String?
   bio          String?
+  notifyOnDispute Boolean @default(false)
+  notifyOnRelease Boolean @default(false)
+  notifyOnRefund  Boolean @default(false)
   createdAt    DateTime @default(now())
 
   jobsAsClient     Job[]         @relation("ClientJobs")

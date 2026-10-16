@@ -87,6 +87,19 @@ usersRouter.post("/auth", validate(authSchema), async (req, res, next) => {
   }
 });
 
+// GET /api/users/me
+usersRouter.get("/me", requireAuth, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { stellarAddress: res.locals.stellarAddress },
+    });
+    if (!user) throw new AppError(404, "User not found");
+    res.json(user);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/users/:address
 usersRouter.get("/:address", async (req, res, next) => {
   try {
@@ -105,16 +118,31 @@ usersRouter.get("/:address", async (req, res, next) => {
 const updateSchema = z.object({
   displayName: z.string().max(80).optional(),
   bio: z.string().max(500).optional(),
+  email: z
+    .string()
+    .email()
+    .or(z.literal(""))
+    .optional()
+    .nullable()
+    .transform((val) => (val === "" ? null : val)),
+  notifyOnDispute: z.boolean().optional(),
+  notifyOnRelease: z.boolean().optional(),
+  notifyOnRefund: z.boolean().optional(),
 });
 
 usersRouter.put("/me", requireAuth, validate(updateSchema), async (req, res, next) => {
   try {
-    const user = await prisma.user.update({
+    const user = await prisma.user.upsert({
       where: { stellarAddress: res.locals.stellarAddress },
-      data: req.body,
+      update: req.body,
+      create: {
+        stellarAddress: res.locals.stellarAddress,
+        ...req.body,
+      },
     });
     res.json(user);
   } catch (err) {
     next(err);
   }
 });
+

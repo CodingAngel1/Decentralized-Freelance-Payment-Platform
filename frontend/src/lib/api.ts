@@ -428,3 +428,52 @@ export async function linkDisputeId(
   if (!res.ok) throw new Error(`Could not record the dispute id (HTTP ${res.status})`);
   return (await res.json()) as DisputeApi;
 }
+
+export interface UserProfileApi {
+  id: string;
+  stellarAddress: string;
+  displayName?: string | null;
+  bio?: string | null;
+  email?: string | null;
+  notifyOnDispute?: boolean;
+  notifyOnRelease?: boolean;
+  notifyOnRefund?: boolean;
+}
+
+export interface UpdateUserProfileInput {
+  displayName?: string;
+  bio?: string;
+  email?: string | null;
+  notifyOnDispute?: boolean;
+  notifyOnRelease?: boolean;
+  notifyOnRefund?: boolean;
+}
+
+/** Fetch a user's off-chain profile and notification preferences. */
+export async function fetchUserProfile(
+  address: string,
+  signal?: AbortSignal,
+): Promise<UserProfileApi | null> {
+  const res = await fetch(`${API_BASE_URL}/api/users/${encodeURIComponent(address)}`, { signal });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Could not fetch user profile (HTTP ${res.status})`);
+  return (await res.json()) as UserProfileApi;
+}
+
+/** Update the authenticated user's profile and notification preferences. */
+export async function updateUserProfile(
+  input: UpdateUserProfileInput,
+  token: string,
+): Promise<UserProfileApi> {
+  const res = await fetch(`${API_BASE_URL}/api/users/me`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`Could not update profile (HTTP ${res.status})`);
+  return (await res.json()) as UserProfileApi;
+}
+

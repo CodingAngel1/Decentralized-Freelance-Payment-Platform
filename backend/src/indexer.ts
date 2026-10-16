@@ -54,6 +54,11 @@ import {
   decodeEventName,
   type ContractEventLike,
 } from "./lib/events";
+import {
+  notifyDisputeOpened,
+  notifyMilestoneReleased,
+  notifyEscrowRefunded,
+} from "./lib/notifications";
 
 const CURSOR_ID = "main";
 const EVENT_PAGE_LIMIT = 100;
@@ -375,7 +380,7 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
 
   const job = await prisma.job.findUnique({
     where: { escrowId },
-    include: { milestones: true },
+    include: { milestones: true, client: true, freelancer: true },
   });
   if (!job) return;
 
@@ -393,6 +398,15 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
   if (allReleased) {
     await prisma.job.update({ where: { id: job.id }, data: { status: "COMPLETED" } });
   }
+
+  try {
+    await notifyMilestoneReleased(job, {
+      index,
+      amountUsdc: String(milestone.amountUsdc),
+    });
+  } catch (notifyErr) {
+    console.error("[notifications] Failed to send milestone release notification:", notifyErr);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -406,7 +420,10 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
  */
 export interface DisputeLifecycleStores {
   job: {
-    findUnique(args: { where: { escrowId: bigint } }): Promise<{ id: string } | null>;
+    findUnique(args: {
+      where: { escrowId: bigint };
+      include?: unknown;
+    }): Promise<{ id: string; title?: string; client?: any; freelancer?: any } | null>;
     updateMany(args: {
       where: { escrowId: bigint };
       data: { status: JobStatus };
@@ -453,6 +470,16 @@ export async function handleDisputeOpened(
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
   await db.job.updateMany({ where: { escrowId }, data: { status: "DISPUTED" } });
+
+  try {
+    const job = await db.job.findUnique({
+      where: { escrowId },
+      include: { client: true, freelancer: true },
+    });
+    if (job && job.title) await notifyDisputeOpened(job as any);
+  } catch (notifyErr) {
+    console.error("[notifications] Failed to send dispute opened notification:", notifyErr);
+  }
 }
 
 async function handleResolved(data: Record<string, unknown>): Promise<void> {
@@ -490,6 +517,16 @@ export async function handleRefunded(
     where: { job: { escrowId }, status: { in: OPEN_DISPUTE_STATUSES } },
     data: { status: "REFUNDED", resolvedAt: new Date() },
   });
+
+  try {
+    const job = await db.job.findUnique({
+      where: { escrowId },
+      include: { client: true, freelancer: true },
+    });
+    if (job && job.title) await notifyEscrowRefunded(job as any);
+  } catch (notifyErr) {
+    console.error("[notifications] Failed to send refund notification:", notifyErr);
+  }
 }
 
 /**
