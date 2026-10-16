@@ -34,6 +34,10 @@
  *     `REFUNDED` and `RESOLVED` are the two terminal dispute states.
  *
  * Contributor Notes:
+ * - Every recognised event is also stored verbatim in ChainEvent (issue #72) so
+ *   a per-user history and an escrow receipt can link to the transaction that
+ *   emitted it; the state handlers below are unaffected by that write, which is
+ *   best-effort.
  * - The cursor (last scanned ledger) is persisted in IndexerCursor, so the
  *   indexer resumes after a restart and does not reprocess applied ledgers.
  * - Unknown events are ignored; a failed event is logged and recorded in
@@ -308,6 +312,20 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
   if (!name || !KNOWN_EVENTS.has(name)) return; // unknown events are ignored
 
   const data = decodeEventFields(event, EVENT_TOPIC_FIELDS[name] ?? []);
+
+  // Record the event itself (issue #72). Best-effort: history is derived data,
+  // and a failure to store it must not stop the state mirror below from being
+  // updated — a dropped history row is recoverable by replaying the event,
+  // whereas a skipped state change is what the dead-letter table exists for.
+  try {
+    const row = buildChainEvent(event, name, data);
+    if (row) {
+      await prisma.chainEvent.upsert({ where: { id: row.id }, create: row, update: {} });
+    }
+  } catch (err) {
+    console.error(`[indexer] could not record event ${event.id ?? "?"} in the history`, err);
+  }
+
   switch (name) {
     case "created":
       await handleCreated(data);

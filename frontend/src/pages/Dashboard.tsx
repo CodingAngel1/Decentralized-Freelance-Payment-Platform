@@ -82,6 +82,22 @@ export default function Dashboard() {
     return () => controller.abort();
   }, [load]);
 
+  useEffect(() => {
+    if (!publicKey) {
+      setReminders([]);
+      return;
+    }
+    const controller = new AbortController();
+    // A failed reminder read must not replace the job list's error state with
+    // its own; reminders are a convenience, and the list already reports.
+    void fetchReminders(publicKey, controller.signal)
+      .then(setReminders)
+      .catch(() => {
+        if (!controller.signal.aborted) setReminders([]);
+      });
+    return () => controller.abort();
+  }, [publicKey]);
+
   return (
     <Layout>
       <h1>My Jobs</h1>
@@ -105,6 +121,45 @@ export default function Dashboard() {
         <p role="alert" className="alert alert-error">
           {walletError}
         </p>
+      )}
+
+      {publicKey && reminders.length > 0 && (
+        <section className="reminders">
+          <h2>Milestone reminders</h2>
+          <ul>
+            {reminders.map((reminder) => (
+              <li key={`${reminder.jobId}:${reminder.milestoneIndex}`}>
+                <span
+                  className={
+                    reminder.kind === "overdue"
+                      ? "badge badge-overdue"
+                      : "badge badge-due-soon"
+                  }
+                >
+                  {reminder.kind === "overdue" ? "Overdue" : "Due soon"}
+                </span>{" "}
+                {reminder.escrowId ? (
+                  <Link to={`/jobs/${reminder.escrowId}`}>{reminder.title}</Link>
+                ) : (
+                  <strong>{reminder.title}</strong>
+                )}{" "}
+                — milestone {reminder.milestoneIndex + 1}
+                {reminder.description ? ` (${reminder.description})` : ""} due{" "}
+                <time dateTime={reminder.deadline}>{formatDate(reminder.deadline)}</time>
+                {reminder.kind === "overdue"
+                  ? " — overdue"
+                  : ` — in ${formatRemaining(
+                      Math.max(
+                        0,
+                        Math.floor(
+                          (new Date(reminder.deadline).getTime() - Date.now()) / 1000,
+                        ),
+                      ),
+                    )}`}
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       <form

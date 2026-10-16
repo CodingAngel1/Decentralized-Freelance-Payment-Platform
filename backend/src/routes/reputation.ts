@@ -1,8 +1,9 @@
 /**
  * reputation.ts
  *
- * POST /api/reputation          — submit a rating (builds reputation.submit tx)
- * GET  /api/reputation/:address — get aggregate score for an address
+ * POST /api/reputation               — submit a rating (builds reputation.submit tx)
+ * GET  /api/reputation/:address      — get aggregate score for an address
+ * GET  /api/reputation/:address/ratings — list the individual ratings received
  */
 
 import { Router } from "express";
@@ -106,6 +107,29 @@ reputationRouter.post("/", requireAuth, validate(submitSchema), async (req, res,
     }
 
     res.status(201).json({ rating, xdr });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/reputation/:address/ratings
+//
+// The aggregate above answers "how good is this address"; a profile that lets a
+// client judge a freelancer also needs the history behind it (issue #69). One
+// row per rating received, newest first, each joined to the job it came from so
+// the client can open the work it refers to.
+reputationRouter.get("/:address/ratings", async (req, res, next) => {
+  try {
+    const ratings = await prisma.rating.findMany({
+      where: { ratee: { stellarAddress: req.params.address } },
+      include: {
+        job: { select: { id: true, title: true, escrowId: true, status: true } },
+        rater: { select: { stellarAddress: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    res.json(ratings);
   } catch (err) {
     next(err);
   }

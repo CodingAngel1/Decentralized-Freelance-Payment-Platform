@@ -67,10 +67,10 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | `dispute` contract | ✅ Complete — verified raise, M-of-N arbitrator panel, resolution that calls back into escrow, dispute timelock |
 | `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings, amount-weighted aggregates, per-pair anti-spam (`docs/REPUTATION.md`) |
 | Contract tests | ✅ 86 tests: 83 unit tests (escrow 49, dispute 17, reputation 17) covering every state transition and failure path, plus 3 end-to-end tests in `contracts/dispute/tests/full_flow.rs` that drive escrow + dispute + reputation together |
-| Backend tests | ✅ 74 tests |
-| Frontend tests | ✅ 86 tests (Vitest + Testing Library) — pages, components and lib helpers |
+| Backend tests | ✅ 138 tests |
+| Frontend tests | ✅ 156 tests (Vitest + Testing Library) — pages, components and lib helpers |
 | Testnet deployment | ✅ Deployed and initialized (ids in [`deployments/testnet.json`](./deployments/testnet.json)) |
-| Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation |
+| Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation, browse a profile's job history and ratings, export an escrow receipt |
 | Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC, with a dead-letter table for events it cannot apply |
 | Job discovery / filtering | ✅ Dashboard lists jobs with status + skill-tag filters and pagination (from the backend API) |
 | Multi-arbitrator / timelocked disputes | ✅ Panel with a timelock escape hatch from `Disputed` (see [`docs/DISPUTES.md`](./docs/DISPUTES.md)) |
@@ -169,6 +169,8 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `GET` | `/api/users/challenge` | — | Issue a single-use nonce for SEP-53 signing |
 | `POST` | `/api/users/auth` | — | Verify the signed message, return a JWT |
 | `GET` | `/api/users/:address` | — | Public profile |
+| `GET` | `/api/users/:address/transactions` | — | Indexed on-chain history for the address's escrows, with explorer links |
+| `GET` | `/api/users/:address/reminders` | — | Milestone deadlines that are overdue or due soon (`?withinHours=`) |
 | `PUT` | `/api/users/me` | ✅ | Update your own profile |
 | `GET` | `/api/jobs` | — | List jobs with status + `tag` filters and pagination |
 | `GET` | `/api/jobs/tags` | — | The curated skill-tag taxonomy |
@@ -185,12 +187,14 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/escrow/build/reclaim-dispute` | ✅ | Build `escrow.reclaim_after_dispute_timeout` (client, after the 7-day dispute timelock) |
 | `POST` | `/api/escrow/build/update-milestones` | ✅ | Build `escrow.update_milestones` (client, before funding) |
 | `PUT` | `/api/escrow/:escrowId/milestones` | ✅ | Record a confirmed milestone edit |
+| `GET` | `/api/escrow/:escrowId/receipt` | — | Printable receipt: job, milestones, releases, transaction links |
 | `POST` | `/api/escrow/sync/:jobId` | ✅ | Link an escrow id to a job |
 | `POST` | `/api/disputes` | ✅ | Build `escrow.open_dispute` and record the dispute |
 | `GET` | `/api/disputes/:id` | — | Dispute detail |
 | `POST` | `/api/disputes/:id/resolve` | ✅ + arbitrator | Build `dispute.arbitrate` |
 | `POST` | `/api/reputation` | ✅ | Build `reputation.submit` |
 | `GET` | `/api/reputation/:address` | — | Aggregate reputation |
+| `GET` | `/api/reputation/:address/ratings` | — | Individual ratings received (score, job, date) |
 
 ### Skills and categories
 
@@ -272,7 +276,7 @@ contracts/            Cargo workspace
                       (tests/full_flow.rs drives all three contracts end to end)
   reputation/         Ratings and weighted aggregates
 backend/              Express API, Prisma schema + migrations, event indexer
-  src/lib/            Pure helpers (events, escrowArgs, assets, signature, authNonce, access)
+  src/lib/            Pure helpers (events, escrowArgs, assets, signature, authNonce, access, reminders, receipt)
   prisma/migrations/  Committed SQL migrations, applied on container start
 frontend/             React app, Vitest config, vercel.json
 deployments/          testnet.json — machine-readable record of the live contracts

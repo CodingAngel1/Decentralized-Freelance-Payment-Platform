@@ -223,6 +223,38 @@ model IndexerDeadLetter {
 }
 
 // ---------------------------------------------------------------------------
+// ChainEvent — indexed contract events, for per-user transaction history
+//
+// The indexer applies events to Job/Milestone/Dispute/Rating, but none of those
+// rows keeps the transaction hash, so the explorer link a history view needs
+// (issue #72) and a receipt needs (issue #77) cannot be rebuilt from them. This
+// table records the events themselves.
+//
+// Keyed on the Soroban RPC event id, which is stable across re-fetches of the
+// same event, so a cursor rewind upserts the row instead of duplicating history.
+// ---------------------------------------------------------------------------
+model ChainEvent {
+  id        String   @id
+  /// Escrow the event belongs to. A user's history is the events on the escrows
+  /// of their jobs, so this is the lookup key. Deliberately not a foreign key:
+  /// an event can arrive before the off-chain job record exists, and it is still
+  /// a record of something that happened on-chain.
+  escrowId  BigInt
+  /// Event name from topic0, e.g. `funded`, `milestone_released` (docs/EVENTS.md).
+  action    String
+  /// Value the event moved, in the asset's base units, when it carries one.
+  amount    Decimal?
+  /// Hash of the transaction that emitted the event, for the explorer link.
+  txHash    String?
+  ledger    Int
+  /// Ledger close time reported by RPC; falls back to the row's receipt time.
+  createdAt DateTime @default(now())
+
+  // A history query is "events for this escrow, in order".
+  @@index([escrowId, ledger])
+}
+
+// ---------------------------------------------------------------------------
 // AuthNonce — single-use, short-lived challenge nonces for wallet auth
 // ---------------------------------------------------------------------------
 model AuthNonce {

@@ -58,6 +58,8 @@ export interface JobApi {
   /** Curated skill-tag slugs (see lib/tags.ts); issue #70. */
   tags?: string[];
   totalAmountUsdc: string | number;
+  /** ISO timestamp the off-chain record was created; used to order history. */
+  createdAt?: string;
   client?: { stellarAddress: string; displayName?: string | null } | null;
   freelancer?: { stellarAddress: string } | null;
   /** Present on the list/detail responses; used by the activity summary (#73). */
@@ -75,6 +77,182 @@ export async function fetchJobs(
   });
   if (!res.ok) throw new Error(`Could not load jobs (HTTP ${res.status})`);
   return (await res.json()) as JobApi[];
+}
+
+/**
+ * Every job an address took part in, as client or as freelancer.
+ *
+ * The API filters by one role at a time, so this asks for both and merges them:
+ * a job where the same address is somehow both parties must not be listed twice.
+ * Newest first, using `createdAt` when the API provided one.
+ */
+export async function fetchUserJobs(
+  address: string,
+  signal?: AbortSignal,
+): Promise<JobApi[]> {
+  const [asClient, asFreelancer] = await Promise.all([
+    fetchJobs({ client: address, limit: 100 }, signal),
+    fetchJobs({ freelancer: address, limit: 100 }, signal),
+  ]);
+  const byId = new Map<string, JobApi>();
+  for (const job of [...asClient, ...asFreelancer]) byId.set(job.id, job);
+  return [...byId.values()].sort((a, b) =>
+    (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+  );
+}
+
+/** A single rating an address received, with the job it refers to. */
+export interface ReceivedRatingApi {
+  id: string;
+  score: number;
+  comment: string | null;
+  /** ISO timestamp the rating was stored. */
+  createdAt: string;
+  job?: { id: string; title: string; escrowId: string | number | null; status: string } | null;
+  rater?: { stellarAddress: string } | null;
+}
+
+/**
+ * The individual ratings an address received, newest first (issue #69).
+ *
+ * `GET /api/reputation/:address` only returns the aggregate; this is the detail
+ * behind it — score, job and date per rating.
+ */
+export async function fetchRatingsReceived(
+  address: string,
+  signal?: AbortSignal,
+): Promise<ReceivedRatingApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/reputation/${encodeURIComponent(address)}/ratings`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load ratings (HTTP ${res.status})`);
+  return (await res.json()) as ReceivedRatingApi[];
+}
+
+/**
+ * One indexed contract event, as the history endpoint returns it (issue #72).
+ *
+ * `amount` is already in whole units of `asset` (like `JobApi.totalAmountUsdc`),
+ * so it is shown as-is; `txHash` is what `explorerTxUrl` turns into a link.
+ */
+export interface TransactionApi {
+  id: string;
+  escrowId: string;
+  action: string;
+  amount: string | null;
+  asset: string | null;
+  txHash: string | null;
+  ledger: number;
+  createdAt: string;
+}
+
+/** The on-chain history for an address's escrows, newest ledger first. */
+export async function fetchTransactions(
+  address: string,
+  signal?: AbortSignal,
+): Promise<TransactionApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/users/${encodeURIComponent(address)}/transactions`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load transactions (HTTP ${res.status})`);
+  return (await res.json()) as TransactionApi[];
+}
+
+/** How a milestone deadline reads right now (issue #74). */
+export type ReminderKind = "overdue" | "due-soon";
+
+/** A milestone deadline that has passed or is coming up. */
+export interface ReminderApi {
+  jobId: string;
+  title: string;
+  escrowId: string | null;
+  milestoneIndex: number;
+  description: string | null;
+  /** Whole units of the job's asset. */
+  amount: string;
+  deadline: string;
+  kind: ReminderKind;
+  role: "client" | "freelancer";
+}
+
+/**
+ * The milestone reminders for an address's open jobs, overdue first.
+ *
+ * The deadlines are evaluated by the server against its own clock, so the client
+ * only decides how to present `kind`.
+ */
+export async function fetchReminders(
+  address: string,
+  signal?: AbortSignal,
+): Promise<ReminderApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/users/${encodeURIComponent(address)}/reminders`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load reminders (HTTP ${res.status})`);
+  return (await res.json()) as ReminderApi[];
+}
+
+/** One milestone as the receipt reports it. */
+export interface ReceiptMilestoneApi {
+  index: number;
+  description: string | null;
+  /** Whole units of the job's asset. */
+  amount: string;
+  status: string;
+  deadline: string | null;
+  releasedAt: string | null;
+}
+
+/** One indexed event as the receipt reports it. */
+export interface ReceiptEventApi {
+  id: string;
+  action: string;
+  /** Whole units of the job's asset, or null when the event moved nothing. */
+  amount: string | null;
+  /** Transaction that emitted the event, for the explorer link. */
+  txHash: string | null;
+  ledger: number;
+  createdAt: string;
+}
+
+/**
+ * A printable/exportable record of one escrow (issue #77): what was agreed, what
+ * was released, and the transaction behind each step.
+ */
+export interface EscrowReceiptApi {
+  escrowId: string;
+  generatedAt: string;
+  job: {
+    id: string;
+    title: string;
+    description: string;
+    status: string;
+    asset: string;
+    totalAmount: string;
+    createdAt: string;
+    expiresAt: string | null;
+    client: { stellarAddress: string; displayName: string | null } | null;
+    freelancer: { stellarAddress: string; displayName: string | null } | null;
+  };
+  milestones: ReceiptMilestoneApi[];
+  events: ReceiptEventApi[];
+  totals: { released: string; outstanding: string };
+}
+
+/** Fetch the receipt for an escrow. Throws, with the status, on a non-2xx. */
+export async function fetchReceipt(
+  escrowId: string | number | bigint,
+  signal?: AbortSignal,
+): Promise<EscrowReceiptApi> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/escrow/${encodeURIComponent(String(escrowId))}/receipt`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load the receipt (HTTP ${res.status})`);
+  return (await res.json()) as EscrowReceiptApi;
 }
 
 // ---------------------------------------------------------------------------

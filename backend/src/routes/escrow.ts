@@ -12,6 +12,7 @@
  * POST /api/escrow/build/reclaim-dispute   — build escrow.reclaim_after_dispute_timeout() tx
  * POST /api/escrow/build/update-milestones — build escrow.update_milestones() tx
  * PUT  /api/escrow/:escrowId/milestones    — record a confirmed milestone edit
+ * GET  /api/escrow/:escrowId/receipt       — printable receipt for one escrow
  * POST /api/escrow/sync/:jobId             — sync on-chain escrow ID to DB job record
  */
 
@@ -34,6 +35,7 @@ import {
   buildReleaseMilestoneArgs,
 } from "../lib/scval";
 import { formatAmount, getAsset, sumAmounts, toBaseUnits, UnknownAssetError } from "../lib/assets";
+import { buildEscrowReceipt } from "../lib/receipt";
 import { friendlyContractError } from "../lib/contractErrors";
 import { isValidStellarAddress } from "../lib/stellarAddress";
 import { prisma } from "../db";
@@ -264,6 +266,40 @@ escrowRouter.put(
     }
   },
 );
+
+// GET /api/escrow/:escrowId/receipt
+//
+// The artifact a client keeps for their records (issue #77): the off-chain job
+// with its milestones, its releases, and the indexed events so every step that
+// happened on-chain carries a transaction the client can look up.
+//
+// Built from indexed state rather than a chain read, so it needs no wallet and
+// no simulation — it is a receipt of what the platform knows, not a view call.
+// The amounts are rendered in whole units of the job's asset, exactly as the
+// job list already reports them.
+escrowRouter.get("/:escrowId/receipt", async (req, res, next) => {
+  try {
+    const escrowIdText = req.params.escrowId;
+    if (!/^\d+$/.test(escrowIdText)) throw new AppError(400, "Invalid escrow id");
+    const escrowId = BigInt(escrowIdText);
+
+    const job = await prisma.job.findUnique({
+      where: { escrowId },
+      include: {
+        milestones: { orderBy: { index: "asc" } },
+        client: { select: { stellarAddress: true, displayName: true } },
+        freelancer: { select: { stellarAddress: true, displayName: true } },
+      },
+    });
+    if (!job) throw new AppError(404, "No job record for that escrow id");
+
+    const events = await prisma.chainEvent.findMany({ where: { escrowId } });
+
+    res.json(buildEscrowReceipt(escrowId, job, events));
+  } catch (err) {
+    next(err);
+  }
+});
 
 // POST /api/escrow/build/fund
 escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: escrowIdSchema })), async (req, res, next) => {

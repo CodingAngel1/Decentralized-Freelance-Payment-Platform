@@ -22,6 +22,9 @@
  *   `useEscrow.openDispute`): the escrow is frozen, then `dispute.raise` mints
  *   the dispute the panel rules on. The id it returns is recorded against the
  *   off-chain row, which is where the reason is kept for the panel to read.
+ * - Each unreleased milestone shows its deadline and whether it has passed, so
+ *   the reminder is visible where the work is released, not only on the
+ *   Dashboard panel (issue #74).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -158,6 +161,11 @@ export default function JobDetail() {
     );
   }
 
+  // Read at render time rather than from the ticking `now` state above: that
+  // clock only runs while a dispute is live, and a milestone deadline matters in
+  // every state. The 5s escrow poll re-renders often enough to keep it honest.
+  const milestoneNow = Math.floor(Date.now() / 1000);
+
   // Show amounts in the escrow's asset (fall back to raw token units if the
   // SAC is not in the registry).
   const asset = escrow ? assetForContractId(escrow.token) : null;
@@ -281,6 +289,9 @@ export default function JobDetail() {
 
       {escrow && (
         <>
+          <p className="job-actions">
+            <Link to={`/jobs/${escrowId}/receipt`}>View receipt</Link>
+          </p>
           <p>
             Status: <StatusBadge status={escrow.status} />
           </p>
@@ -311,6 +322,21 @@ export default function JobDetail() {
                       m.amount - m.released_amount,
                       decimals,
                     )} remaining`}{" "}
+                {!m.released && m.deadline > 0n && (
+                  <span className="muted">
+                    · due{" "}
+                    <time
+                      dateTime={new Date(Number(m.deadline) * 1000).toISOString()}
+                    >
+                      {formatDeadline(m.deadline)}
+                    </time>
+                    {secondsUntil(m.deadline, milestoneNow) === 0
+                      ? " (overdue)"
+                      : ` (${formatRemaining(
+                          secondsUntil(m.deadline, milestoneNow),
+                        )} left)`}
+                  </span>
+                )}{" "}
                 {isClient && isActive && !m.released && (
                   <button
                     disabled={isPending("release", `${escrowId}:${i}`)}

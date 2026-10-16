@@ -8,6 +8,7 @@
  *   /post          → PostJob (client creates + funds a new escrow)
  *   /activity      → Activity (earnings + open escrows for the wallet, #73)
  *   /jobs/:id      → JobDetail (milestone tracker, release + dispute)
+ *   /jobs/:id/receipt → Receipt (printable/exportable record)
  *   /profile/:addr → Profile (reputation score)
  */
 
@@ -20,6 +21,7 @@ import Dashboard from "./pages/Dashboard";
 import Activity from "./pages/Activity";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
+import Receipt from "./pages/Receipt";
 import Profile from "./pages/Profile";
 import FreelancerDirectory from "./pages/FreelancerDirectory";
 
@@ -58,6 +60,7 @@ export default function App() {
           <Route path="/post" element={<PostJob />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/jobs/:id" element={<JobDetail />} />
+          <Route path="/jobs/:id/receipt" element={<Receipt />} />
           <Route path="/profile/:address" element={<Profile />} />
         </Routes>
       </BrowserRouter>

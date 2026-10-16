@@ -10,6 +10,7 @@ import {
 import {
   EVENT_TOPIC_FIELDS,
   applyRatedEvent,
+  buildChainEvent,
   handleDisputeOpened,
   handleRaised,
   handleRefunded,
@@ -139,6 +140,99 @@ describe("event decoding", () => {
 
     expect(EVENT_TOPIC_FIELDS.funded).toBeUndefined();
     expect(eventFields(event).escrow_id).toBe(7n);
+  });
+});
+
+describe("chain event history (#72)", () => {
+  /** An event as RPC returns it, including the transaction metadata. */
+  function withMeta(
+    event: ContractEventLike,
+    txHash: string,
+    ledgerClosedAt: string,
+  ): ContractEventLike {
+    return { ...event, txHash, ledgerClosedAt };
+  }
+
+  it("records the escrow, action, moved amount and transaction hash", () => {
+    const event = withMeta(
+      makeEvent(
+        "milestone_released",
+        {
+          escrow_id: nativeToScVal(7n, { type: "u64" }),
+          index: nativeToScVal(0, { type: "u32" }),
+          amount: nativeToScVal(3_000_000n, { type: "i128" }),
+        },
+        42,
+        [nativeToScVal(7n, { type: "u64" })],
+      ),
+      "abc123",
+      "2026-01-02T03:04:05.000Z",
+    );
+
+    const row = buildChainEvent(event, "milestone_released", eventFields(event));
+
+    expect(row).toMatchObject({
+      // The RPC id, so a replayed event upserts the same row.
+      id: "evt-42",
+      escrowId: 7n,
+      action: "milestone_released",
+      // Base units, exactly as the contract emitted them.
+      amount: "3000000",
+      txHash: "abc123",
+      ledger: 42,
+    });
+    expect(row?.createdAt.toISOString()).toBe("2026-01-02T03:04:05.000Z");
+  });
+
+  it("sums the two shares a resolution distributed", () => {
+    const event = makeEvent("resolved", {
+      escrow_id: nativeToScVal(7n, { type: "u64" }),
+      client_share: nativeToScVal(500_000n, { type: "i128" }),
+      freelancer_share: nativeToScVal(1_500_000n, { type: "i128" }),
+    });
+
+    expect(buildChainEvent(event, "resolved", eventFields(event))?.amount).toBe("2000000");
+  });
+
+  it("stores no amount for events that report a total rather than move funds", () => {
+    // `created` carries the escrow total, which has not moved; showing it as an
+    // amount would be misleading next to `funded`.
+    const created = makeEvent("created", {
+      escrow_id: nativeToScVal(7n, { type: "u64" }),
+      total_amount: nativeToScVal(9_000_000n, { type: "i128" }),
+    });
+
+    expect(buildChainEvent(created, "created", eventFields(created))?.amount).toBeNull();
+  });
+
+  it("skips an event that belongs to no escrow", () => {
+    // `approved` carries a dispute id in its topic and no escrow id, so there is
+    // nothing to attach the row to.
+    const approved = makeEvent(
+      "approved",
+      { arbitrator: Address.fromString(Keypair.random().publicKey()).toScVal() },
+      10,
+      [nativeToScVal(3n, { type: "u64" })],
+    );
+
+    expect(buildChainEvent(approved, "approved", eventFields(approved))).toBeNull();
+  });
+
+  it("composes a key for an event RPC gave no id, so a replayed batch is stable", () => {
+    const event: ContractEventLike = {
+      ledger: 5,
+      topic: [xdr.ScVal.scvSymbol("funded"), nativeToScVal(7n, { type: "u64" })],
+      value: mapVal({
+        escrow_id: nativeToScVal(7n, { type: "u64" }),
+        amount: nativeToScVal(1n, { type: "i128" }),
+      }),
+    };
+
+    const first = buildChainEvent(event, "funded", eventFields(event));
+    const second = buildChainEvent(event, "funded", eventFields(event));
+
+    expect(first?.id).toBe("5-funded-7");
+    expect(second?.id).toBe(first?.id);
   });
 });
 

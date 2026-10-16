@@ -1,9 +1,11 @@
 /**
  * users.ts
  *
- * POST /api/users/auth   — issue JWT after verifying a signed Stellar challenge
- * GET  /api/users/:addr  — get public profile
- * PUT  /api/users/me     — update display name / bio (auth required)
+ * POST /api/users/auth            — issue JWT after verifying a signed Stellar challenge
+ * GET  /api/users/:addr           — get public profile
+ * GET  /api/users/:addr/transactions — on-chain history for the user's escrows
+ * GET  /api/users/:addr/reminders — milestones that are due soon or overdue
+ * PUT  /api/users/me              — update display name / bio (auth required)
  *
  * Auth flow (challenge-response):
  *   1. Client calls GET /api/users/challenge?address=G...
@@ -27,6 +29,8 @@ import { AppError } from "../middleware/errorHandler";
 import { consumeNonce, issueNonce, type AuthNonceStore } from "../lib/authNonce";
 import { verifySignedMessage } from "../lib/signature";
 import { isValidStellarAddress } from "../lib/stellarAddress";
+import { formatBaseUnitsForAsset } from "../lib/assets";
+import { buildMilestoneReminders, parseHorizonHours } from "../lib/reminders";
 
 export const usersRouter = Router();
 
