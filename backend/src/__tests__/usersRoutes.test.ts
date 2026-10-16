@@ -146,3 +146,98 @@ describe("GET /api/users/:address/transactions", () => {
     expect(h.chainEvent.findMany).not.toHaveBeenCalled();
   });
 });
+
+describe("GET /api/users/:address/reminders (#74)", () => {
+  const hoursFromNow = (hours: number) => new Date(Date.now() + hours * 3_600_000);
+
+  /** The job rows `prisma.job.findMany` returns to the reminders route. */
+  function openJob(milestones: unknown[]) {
+    return {
+      id: "job-1",
+      title: "Landing page redesign",
+      escrowId: 7n,
+      client: { stellarAddress: USER },
+      freelancer: { stellarAddress: "GFREELANCER" },
+      milestones,
+    };
+  }
+
+  it("returns the milestones that are due soon or overdue", async () => {
+    // One Date instance: the route echoes the deadline it was given, and two
+    // `hoursFromNow` calls would differ by the milliseconds between them.
+    const deadline = hoursFromNow(3);
+    h.job.findMany.mockResolvedValue([
+      openJob([
+        {
+          index: 1,
+          description: "Ship it",
+          amountUsdc: "2.5",
+          status: "PENDING",
+          // Inside the 48h default horizon.
+          deadline,
+        },
+      ]),
+    ]);
+
+    const res = await get(`/${USER}/reminders`);
+
+    expect(res.status).toBe(200);
+    // A terminal escrow has no deadline left to act on, and a released
+    // milestone has already been paid — neither can remind anyone.
+    expect(h.job.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          status: { in: ["CREATED", "FUNDED", "ACTIVE"] },
+          OR: [
+            { client: { stellarAddress: USER } },
+            { freelancer: { stellarAddress: USER } },
+          ],
+        },
+      }),
+    );
+    expect(res.body).toEqual([
+      {
+        jobId: "job-1",
+        title: "Landing page redesign",
+        escrowId: "7",
+        milestoneIndex: 1,
+        description: "Ship it",
+        amount: "2.5",
+        deadline: deadline.toISOString(),
+        kind: "due-soon",
+        role: "client",
+      },
+    ]);
+  });
+
+  it("honours ?withinHours for callers that want a wider horizon", async () => {
+    h.job.findMany.mockResolvedValue([
+      openJob([
+        {
+          index: 0,
+          description: null,
+          amountUsdc: "1",
+          status: "PENDING",
+          // Beyond the 48h default, inside a week.
+          deadline: hoursFromNow(100),
+        },
+      ]),
+    ]);
+
+    expect(await get(`/${USER}/reminders`)).toMatchObject({ body: [] });
+    const res = await get(`/${USER}/reminders?withinHours=168`);
+    expect((res.body as unknown[]).length).toBe(1);
+  });
+
+  it("falls back to the default horizon for an unusable ?withinHours", async () => {
+    h.job.findMany.mockResolvedValue([
+      openJob([
+        { index: 0, description: null, amountUsdc: "1", status: "PENDING", deadline: hoursFromNow(10) },
+      ]),
+    ]);
+
+    const res = await get(`/${USER}/reminders?withinHours=abc`);
+
+    expect((res.body as unknown[]).length).toBe(1);
+  });
+});

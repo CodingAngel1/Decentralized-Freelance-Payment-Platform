@@ -4,6 +4,7 @@
  * POST /api/users/auth            — issue JWT after verifying a signed Stellar challenge
  * GET  /api/users/:addr           — get public profile
  * GET  /api/users/:addr/transactions — on-chain history for the user's escrows
+ * GET  /api/users/:addr/reminders — milestones that are due soon or overdue
  * PUT  /api/users/me              — update display name / bio (auth required)
  *
  * Auth flow (challenge-response):
@@ -29,6 +30,7 @@ import { consumeNonce, issueNonce, type AuthNonceStore } from "../lib/authNonce"
 import { verifySignedMessage } from "../lib/signature";
 import { isValidStellarAddress } from "../lib/stellarAddress";
 import { formatBaseUnitsForAsset } from "../lib/assets";
+import { buildMilestoneReminders, parseHorizonHours } from "../lib/reminders";
 
 export const usersRouter = Router();
 
@@ -140,6 +142,50 @@ usersRouter.get("/:address/transactions", async (req, res, next) => {
         };
       }),
     );
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/users/:address/reminders
+//
+// The in-app half of issue #74: the milestones on the address's open jobs whose
+// deadline has passed or is inside the horizon (`?withinHours=`, default from
+// `REMINDER_HORIZON_HOURS`). Derived on read rather than stored, so a reminder
+// cannot go stale and a released milestone stops reminding immediately.
+//
+// Email delivery is not implemented — `User` has no email address — so this is
+// the only channel; `/api/users/:address/reminders` is where a mailer would
+// read from (see lib/reminders.ts).
+usersRouter.get("/:address/reminders", async (req, res, next) => {
+  try {
+    const address = req.params.address;
+    const withinHours = parseHorizonHours(
+      req.query.withinHours,
+      config.REMINDER_HORIZON_HOURS,
+    );
+
+    // Terminal states are excluded: a completed, disputed or refunded escrow has
+    // no deadline left to act on.
+    const jobs = await prisma.job.findMany({
+      where: {
+        status: { in: ["CREATED", "FUNDED", "ACTIVE"] },
+        OR: [
+          { client: { stellarAddress: address } },
+          { freelancer: { stellarAddress: address } },
+        ],
+      },
+      include: {
+        milestones: {
+          where: { status: "PENDING", deadline: { not: null } },
+          orderBy: { index: "asc" },
+        },
+        client: { select: { stellarAddress: true } },
+        freelancer: { select: { stellarAddress: true } },
+      },
+    });
+
+    res.json(buildMilestoneReminders(jobs, address, new Date(), withinHours));
   } catch (err) {
     next(err);
   }

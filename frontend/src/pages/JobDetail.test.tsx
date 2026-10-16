@@ -374,6 +374,33 @@ describe("JobDetail dispute timelock", () => {
   });
 });
 
+describe("JobDetail milestone deadlines (#74)", () => {
+  /** An Active escrow whose only milestone has the given deadline. */
+  const activeWithDeadline = (deadline: bigint) => ({
+    ...ACTIVE,
+    milestones: [
+      { amount: 20_000_000n, released: false, released_amount: 0n, deadline },
+    ],
+  });
+
+  it("flags an unreleased milestone whose deadline has passed", async () => {
+    h.escrow.getEscrow.mockResolvedValue(activeWithDeadline(BigInt(nowSeconds() - 60)));
+    render(<JobDetail />);
+
+    // The reminder is visible where the work is released, not only on the
+    // Dashboard panel.
+    expect(await screen.findByText(/\(overdue\)/)).toBeTruthy();
+  });
+
+  it("shows the time left on a deadline still ahead", async () => {
+    h.escrow.getEscrow.mockResolvedValue(activeWithDeadline(BigInt(nowSeconds() + 4 * 3_600)));
+    render(<JobDetail />);
+
+    expect(await screen.findByText(/left\)/)).toBeTruthy();
+    expect(screen.queryByText(/\(overdue\)/)).toBeNull();
+  });
+});
+
 describe("JobDetail opening a dispute", () => {
   const REASON = "The final milestone was never delivered";
 

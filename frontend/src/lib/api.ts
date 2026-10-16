@@ -140,6 +140,41 @@ export async function fetchTransactions(
   return (await res.json()) as TransactionApi[];
 }
 
+/** How a milestone deadline reads right now (issue #74). */
+export type ReminderKind = "overdue" | "due-soon";
+
+/** A milestone deadline that has passed or is coming up. */
+export interface ReminderApi {
+  jobId: string;
+  title: string;
+  escrowId: string | null;
+  milestoneIndex: number;
+  description: string | null;
+  /** Whole units of the job's asset. */
+  amount: string;
+  deadline: string;
+  kind: ReminderKind;
+  role: "client" | "freelancer";
+}
+
+/**
+ * The milestone reminders for an address's open jobs, overdue first.
+ *
+ * The deadlines are evaluated by the server against its own clock, so the client
+ * only decides how to present `kind`.
+ */
+export async function fetchReminders(
+  address: string,
+  signal?: AbortSignal,
+): Promise<ReminderApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/users/${encodeURIComponent(address)}/reminders`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load reminders (HTTP ${res.status})`);
+  return (await res.json()) as ReminderApi[];
+}
+
 // ---------------------------------------------------------------------------
 // Authenticated writes
 // ---------------------------------------------------------------------------

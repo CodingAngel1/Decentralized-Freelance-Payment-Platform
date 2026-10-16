@@ -5,6 +5,7 @@ import {
   createDispute,
   createJob,
   fetchRatingsReceived,
+  fetchReminders,
   fetchTransactions,
   fetchUserJobs,
   linkDisputeId,
@@ -174,6 +175,48 @@ describe("fetchTransactions", () => {
     );
 
     await expect(fetchTransactions("GADDR")).rejects.toThrow(/HTTP 503/);
+  });
+});
+
+describe("fetchReminders", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests the per-address reminders endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            jobId: "job-1",
+            title: "Redesign",
+            escrowId: "7",
+            milestoneIndex: 1,
+            description: "Ship it",
+            amount: "2.5",
+            deadline: "2026-01-13T12:00:00.000Z",
+            kind: "due-soon",
+            role: "client",
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const reminders = await fetchReminders("GADDR");
+
+    expect(reminders[0].kind).toBe("due-soon");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/users/GADDR/reminders");
+  });
+
+  it("throws with the status when the API rejects the read", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 500 })),
+    );
+
+    await expect(fetchReminders("GADDR")).rejects.toThrow(/HTTP 500/);
   });
 });
 

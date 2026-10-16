@@ -2,7 +2,8 @@
  * Dashboard.tsx
  *
  * Landing page: connect the wallet, browse the job list, and open a job by
- * its on-chain id. The list comes from `GET /api/jobs`.
+ * its on-chain id. The list comes from `GET /api/jobs`, and the connected
+ * wallet's milestone reminders from `GET /api/users/:address/reminders`.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -10,8 +11,9 @@ import { Link, useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
-import { fetchJobs, type JobApi } from "../lib/api";
+import { fetchJobs, fetchReminders, type JobApi, type ReminderApi } from "../lib/api";
 import { useWallet } from "../hooks/wallet-context";
+import { formatDate, formatRemaining } from "../lib/time";
 
 const PAGE_SIZE = 10;
 const STATUSES = ["CREATED", "FUNDED", "ACTIVE", "COMPLETED", "DISPUTED", "REFUNDED"];
@@ -27,6 +29,10 @@ export default function Dashboard() {
   const [hasMore, setHasMore] = useState(false);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
+
+  // Milestone due-date reminders for the connected wallet (issue #74). The
+  // server decides what is due; this only presents it.
+  const [reminders, setReminders] = useState<ReminderApi[]>([]);
 
   const load = useCallback(
     async (pageToLoad: number, append: boolean, signal?: AbortSignal) => {
@@ -57,6 +63,22 @@ export default function Dashboard() {
     return () => controller.abort();
   }, [load]);
 
+  useEffect(() => {
+    if (!publicKey) {
+      setReminders([]);
+      return;
+    }
+    const controller = new AbortController();
+    // A failed reminder read must not replace the job list's error state with
+    // its own; reminders are a convenience, and the list already reports.
+    void fetchReminders(publicKey, controller.signal)
+      .then(setReminders)
+      .catch(() => {
+        if (!controller.signal.aborted) setReminders([]);
+      });
+    return () => controller.abort();
+  }, [publicKey]);
+
   return (
     <Layout>
       <h1>My Jobs</h1>
@@ -80,6 +102,45 @@ export default function Dashboard() {
         <p role="alert" className="alert alert-error">
           {walletError}
         </p>
+      )}
+
+      {publicKey && reminders.length > 0 && (
+        <section className="reminders">
+          <h2>Milestone reminders</h2>
+          <ul>
+            {reminders.map((reminder) => (
+              <li key={`${reminder.jobId}:${reminder.milestoneIndex}`}>
+                <span
+                  className={
+                    reminder.kind === "overdue"
+                      ? "badge badge-overdue"
+                      : "badge badge-due-soon"
+                  }
+                >
+                  {reminder.kind === "overdue" ? "Overdue" : "Due soon"}
+                </span>{" "}
+                {reminder.escrowId ? (
+                  <Link to={`/jobs/${reminder.escrowId}`}>{reminder.title}</Link>
+                ) : (
+                  <strong>{reminder.title}</strong>
+                )}{" "}
+                — milestone {reminder.milestoneIndex + 1}
+                {reminder.description ? ` (${reminder.description})` : ""} due{" "}
+                <time dateTime={reminder.deadline}>{formatDate(reminder.deadline)}</time>
+                {reminder.kind === "overdue"
+                  ? " — overdue"
+                  : ` — in ${formatRemaining(
+                      Math.max(
+                        0,
+                        Math.floor(
+                          (new Date(reminder.deadline).getTime() - Date.now()) / 1000,
+                        ),
+                      ),
+                    )}`}
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       <form

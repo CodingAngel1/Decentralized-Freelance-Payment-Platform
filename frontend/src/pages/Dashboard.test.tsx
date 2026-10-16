@@ -1,10 +1,11 @@
 /**
  * Dashboard.test.tsx
  *
- * The landing page is the one route every visitor loads, and it holds the two
- * pieces of state most likely to regress silently: the job list (filter +
- * pagination + aborts) and the "open a job by id" form. The wallet and the API
- * client are mocked — no network, no Freighter.
+ * The landing page is the one route every visitor loads, and it holds the pieces
+ * of state most likely to regress silently: the job list (filter + pagination +
+ * aborts), the "open a job by id" form, and the connected wallet's milestone
+ * reminders (issue #74). The wallet and the API client are mocked — no network,
+ * no Freighter.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +22,7 @@ const h = vi.hoisted(() => ({
     disconnect: vi.fn(),
   },
   fetchJobs: vi.fn(),
+  fetchReminders: vi.fn(),
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -30,12 +32,30 @@ vi.mock("react-router-dom", () => ({
   ),
 }));
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
-vi.mock("../lib/api", () => ({ fetchJobs: h.fetchJobs }));
+vi.mock("../lib/api", () => ({
+  fetchJobs: h.fetchJobs,
+  fetchReminders: h.fetchReminders,
+}));
 
 import Dashboard from "./Dashboard";
-import type { JobApi } from "../lib/api";
+import type { JobApi, ReminderApi } from "../lib/api";
 
 const CLIENT = "GBPLJHDI6RPLS4EEJJTM7EVEV3UNTXLFAACWA63QSTHGLWH5RO3LQ75B";
+
+function reminder(overrides: Partial<ReminderApi> = {}): ReminderApi {
+  return {
+    jobId: "job-1",
+    title: "Landing page redesign",
+    escrowId: "7",
+    milestoneIndex: 1,
+    description: "Ship it",
+    amount: "2.5",
+    deadline: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+    kind: "due-soon",
+    role: "client",
+    ...overrides,
+  };
+}
 
 function job(overrides: Partial<JobApi> = {}): JobApi {
   return {
@@ -60,6 +80,8 @@ beforeEach(() => {
   h.navigate.mockClear();
   h.fetchJobs.mockReset();
   h.fetchJobs.mockResolvedValue([]);
+  h.fetchReminders.mockReset();
+  h.fetchReminders.mockResolvedValue([]);
   h.wallet.publicKey = null;
   h.wallet.connecting = false;
   h.wallet.error = null;
@@ -94,6 +116,56 @@ describe("Dashboard wallet state", () => {
     expect(screen.getByRole("alert").textContent).toBe(
       "Freighter wallet not found. Install it from freighter.app",
     );
+  });
+});
+
+describe("Dashboard milestone reminders (#74)", () => {
+  it("surfaces the connected wallet's due-soon and overdue milestones", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchReminders.mockResolvedValue([
+      reminder({ kind: "overdue", milestoneIndex: 0 }),
+      reminder({ kind: "due-soon", milestoneIndex: 1 }),
+    ]);
+
+    render(<Dashboard />);
+
+    expect(await screen.findByText("Overdue")).toBeTruthy();
+    expect(screen.getByText("Due soon")).toBeTruthy();
+    expect(h.fetchReminders).toHaveBeenCalledWith(CLIENT, expect.any(AbortSignal));
+    // The reminder points at the escrow the client has to act on.
+    expect(
+      screen.getAllByRole("link", { name: "Landing page redesign" })[0].getAttribute("href"),
+    ).toBe("/jobs/7");
+    expect(screen.getByText(/milestone 1/)).toBeTruthy();
+    expect(screen.getByText(/overdue/)).toBeTruthy();
+  });
+
+  it("does not ask for reminders when no wallet is connected", async () => {
+    render(<Dashboard />);
+
+    await screen.findByText("No jobs found.");
+    expect(h.fetchReminders).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "Milestone reminders" })).toBeNull();
+  });
+
+  it("shows no panel when there is nothing due", async () => {
+    h.wallet.publicKey = CLIENT;
+    render(<Dashboard />);
+
+    await screen.findByText("No jobs found.");
+    expect(screen.queryByRole("heading", { name: "Milestone reminders" })).toBeNull();
+  });
+
+  it("keeps the job list intact when the reminder read fails", async () => {
+    // Reminders are a convenience: a failure must not blank the page.
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    h.fetchReminders.mockRejectedValue(new Error("Could not load reminders (HTTP 500)"));
+
+    render(<Dashboard />);
+
+    expect(await screen.findByText("Landing page redesign")).toBeTruthy();
+    expect(screen.queryByText(/Could not load reminders/)).toBeNull();
   });
 });
 

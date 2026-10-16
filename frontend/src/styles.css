@@ -183,6 +183,19 @@ fieldset {
   border-color: #cbd5e1;
 }
 
+/* Milestone due-date reminders (issue #74) — a deadline, not an escrow state. */
+.badge-overdue {
+  background: #fdecea;
+  color: #b42318;
+  border-color: #f4c7c3;
+}
+
+.badge-due-soon {
+  background: #fdf5e6;
+  color: #92610a;
+  border-color: #f0dca8;
+}
+
 /* --- Jobs list ---------------------------------------------------------- */
 
 .job-list {
