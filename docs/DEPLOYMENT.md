@@ -211,3 +211,12 @@ event, then delete the row.
 
 Contract ids and `VITE_*` values are baked in at build time, so if you redeploy
 the contracts you must restart the backend and rebuild the frontend.
+
+### Containerised API routing & reverse proxy
+
+The containerised frontend image uses nginx as a reverse proxy for `/api/` traffic (`frontend/nginx.conf`):
+- When built via `docker-compose.yml`, `VITE_API_URL` defaults to an empty string (`""`), configuring the application in `frontend/src/lib/api.ts` to make relative requests (`/api/...`).
+- In the browser, API calls made to `/api/*` on port 5173 hit nginx on container port 8080, which reverse-proxies them directly to `http://backend:3000`.
+- In local development (`npm run dev`), Vite's dev server proxy similarly forwards `/api` to `http://localhost:3000`.
+- For external or custom deployments where the frontend and backend are hosted on separate domains, `VITE_API_URL` can be set to an absolute backend URL at build time.
+

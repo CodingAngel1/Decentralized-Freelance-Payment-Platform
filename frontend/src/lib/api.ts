@@ -302,3 +302,130 @@ export async function linkDisputeId(
   if (!res.ok) throw new Error(`Could not record the dispute id (HTTP ${res.status})`);
   return (await res.json()) as DisputeApi;
 }
+
+// ---------------------------------------------------------------------------
+// Notifications (#66)
+// ---------------------------------------------------------------------------
+
+export interface NotificationApi {
+  id: string;
+  userId: string;
+  jobId: string | null;
+  type: "FUNDED" | "RELEASED" | "DISPUTED" | "RESOLVED";
+  title: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface NotificationsResponse {
+  notifications: NotificationApi[];
+  unreadCount: number;
+}
+
+/** Fetch user notifications (requires bearer token). */
+export async function fetchNotifications(
+  token: string,
+  unreadOnly = false,
+  signal?: AbortSignal,
+): Promise<NotificationsResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/notifications${unreadOnly ? "?unread=true" : ""}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+    },
+  );
+  if (!res.ok) throw new Error(`Could not load notifications (HTTP ${res.status})`);
+  return (await res.json()) as NotificationsResponse;
+}
+
+/** Mark a single notification as read. */
+export async function markNotificationRead(
+  token: string,
+  notificationId: string,
+): Promise<NotificationApi> {
+  const res = await fetch(`${API_BASE_URL}/api/notifications/${notificationId}/read`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not mark notification as read (HTTP ${res.status})`);
+  return (await res.json()) as NotificationApi;
+}
+
+/** Mark all notifications for the user as read. */
+export async function markAllNotificationsRead(token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/notifications/read-all`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not mark all notifications as read (HTTP ${res.status})`);
+}
+
+// ---------------------------------------------------------------------------
+// Freelancer Directory (#68)
+// ---------------------------------------------------------------------------
+
+export interface FreelancerApi {
+  id: string;
+  stellarAddress: string;
+  displayName: string | null;
+  bio: string | null;
+  createdAt: string;
+  averageScore: number;
+  totalRatings: number;
+  completedJobsCount: number;
+  totalJobsCount: number;
+}
+
+export interface FreelancerListQuery {
+  search?: string;
+  sortBy?: "reputation" | "jobs" | "recent";
+  sortOrder?: "asc" | "desc";
+  page?: number;
+  limit?: number;
+}
+
+export interface FreelancersResponse {
+  freelancers: FreelancerApi[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+/** Build the `/api/users/freelancers` query string, omitting empty filters. */
+export function buildFreelancersQuery(query: FreelancerListQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.search) params.set("search", query.search);
+  if (query.sortBy) params.set("sortBy", query.sortBy);
+  if (query.sortOrder) params.set("sortOrder", query.sortOrder);
+  if (query.page !== undefined) params.set("page", String(query.page));
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/** Fetch a page of freelancers from the directory. Throws on non-2xx response. */
+export async function fetchFreelancers(
+  query: FreelancerListQuery = {},
+  signal?: AbortSignal,
+): Promise<FreelancersResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/users/freelancers${buildFreelancersQuery(query)}`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load freelancers (HTTP ${res.status})`);
+  const data = await res.json();
+  if (Array.isArray(data)) {
+    return {
+      freelancers: data,
+      total: data.length,
+      page: 1,
+      limit: data.length,
+      totalPages: 1,
+    };
+  }
+  return data as FreelancersResponse;
+}
+

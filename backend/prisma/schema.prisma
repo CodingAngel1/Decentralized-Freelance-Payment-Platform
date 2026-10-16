@@ -231,3 +231,29 @@ model AuthNonce {
   nonce     String
   expiresAt DateTime
 }
+
+// ---------------------------------------------------------------------------
+// Notifications — persistent user alerts for contract and escrow events (#66)
+// ---------------------------------------------------------------------------
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation("UserNotifications", fields: [userId], references: [id])
+  jobId     String?
+  type      NotificationType
+  title     String
+  message   String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+}
+
+enum NotificationType {
+  FUNDED
+  RELEASED
+  DISPUTED
+  RESOLVED
+}
+

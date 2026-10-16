@@ -67,6 +67,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        # Defaults to empty string so requests are relative (/api/...) and routed
+        # through the frontend container's nginx reverse proxy to http://backend:3000
+        VITE_API_URL: ${VITE_API_URL:-}
         VITE_NETWORK: ${VITE_NETWORK:-testnet}
         # Point the containerised app at a non-local API (defaults to
         # http://localhost:3000 inside the bundle otherwise).

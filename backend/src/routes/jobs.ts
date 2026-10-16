@@ -16,6 +16,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
+import type { JobStatus } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -52,7 +53,7 @@ jobsRouter.get("/", async (req, res, next) => {
 
     const jobs = await prisma.job.findMany({
       where: {
-        ...(status ? { status: String(status) as any } : {}),
+        ...(status ? { status: String(status) as JobStatus } : {}),
         ...(client ? { client: { stellarAddress: String(client) } } : {}),
         ...(freelancer ? { freelancer: { stellarAddress: String(freelancer) } } : {}),
         // Postgres array containment: a job matches when its tags include this one.

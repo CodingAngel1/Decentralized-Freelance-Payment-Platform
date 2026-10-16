@@ -15,11 +15,13 @@ import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { WalletProvider } from "./hooks/WalletProvider";
 import { useWallet } from "./hooks/wallet-context";
 import AddressField from "./components/AddressField";
+import NotificationsBell from "./components/NotificationsBell";
 import Dashboard from "./pages/Dashboard";
 import Activity from "./pages/Activity";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
 import Profile from "./pages/Profile";
+import FreelancerDirectory from "./pages/FreelancerDirectory";
 
 function Nav() {
   const { publicKey, connecting, connect, disconnect } = useWallet();
@@ -28,9 +30,10 @@ function Nav() {
       <Link to="/">My Jobs</Link>
       <Link to="/activity">Activity</Link>
       <Link to="/post">Post a Job</Link>
-      <span className="nav-spacer">
+      <span className="nav-spacer" style={{ display: "inline-flex", alignItems: "center" }}>
         {publicKey ? (
           <>
+            <NotificationsBell />
             <AddressField address={publicKey} truncate />{" "}
             <button onClick={disconnect}>Disconnect</button>
           </>
@@ -51,6 +54,7 @@ export default function App() {
         <Nav />
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/freelancers" element={<FreelancerDirectory />} />
           <Route path="/post" element={<PostJob />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/jobs/:id" element={<JobDetail />} />
