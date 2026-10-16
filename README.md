@@ -170,7 +170,7 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/users/auth` | — | Verify the signed message, return a JWT |
 | `GET` | `/api/users/:address` | — | Public profile |
 | `PUT` | `/api/users/me` | ✅ | Update your own profile |
-| `GET` | `/api/jobs` | — | List jobs with status filter + pagination |
+| `GET` | `/api/jobs` | — | List jobs; `status`/`page`/`limit` validated (`limit` ≤ 100), bad values are a 400 |
 | `POST` | `/api/jobs` | ✅ | Create the off-chain job record |
 | `GET` | `/api/jobs/:id` | — | Job detail with milestones |
 | `PUT` | `/api/jobs/:id/assign` | ✅ | Assign a freelancer |
@@ -181,7 +181,7 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/escrow/build/reclaim-dispute` | ✅ | Build `escrow.reclaim_after_dispute_timeout` (client, after the 7-day dispute timelock) |
 | `POST` | `/api/escrow/build/update-milestones` | ✅ | Build `escrow.update_milestones` (client, before funding) |
 | `PUT` | `/api/escrow/:escrowId/milestones` | ✅ | Record a confirmed milestone edit |
-| `POST` | `/api/escrow/sync/:jobId` | ✅ | Link an escrow id to a job |
+| `POST` | `/api/escrow/sync/:jobId` | ✅ + client | Link a positive-integer escrow id to a job (403 unless you are its client) |
 | `POST` | `/api/disputes` | ✅ | Build `escrow.open_dispute` and record the dispute |
 | `GET` | `/api/disputes/:id` | — | Dispute detail |
 | `POST` | `/api/disputes/:id/resolve` | ✅ + arbitrator | Build `dispute.arbitrate` |

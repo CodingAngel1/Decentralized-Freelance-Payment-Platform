@@ -21,24 +21,34 @@ import {
   UnknownAssetError,
   type AssetInfo,
 } from "../lib/assets";
-import { createJobSchema } from "../lib/schemas";
+import { createJobSchema, listJobsQuerySchema } from "../lib/schemas";
 
 export const jobsRouter = Router();
 
 // GET /api/jobs
+//
+// The query string is parsed with `listJobsQuerySchema` before it reaches
+// Prisma: an unknown `status` used to throw inside Prisma (a 500 rather than a
+// 400), a non-numeric `page`/`limit` became `NaN` in `skip`/`take`, and `limit`
+// was unbounded.
 jobsRouter.get("/", async (req, res, next) => {
   try {
-    const { status, client, freelancer, page = "1", limit = "20" } = req.query;
+    const parsed = listJobsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, parsed.error.issues.map((i) => i.message).join(", "));
+    }
+    const { status, client, freelancer, page, limit } = parsed.data;
+
     const jobs = await prisma.job.findMany({
       where: {
-        ...(status ? { status: String(status) as any } : {}),
-        ...(client ? { client: { stellarAddress: String(client) } } : {}),
-        ...(freelancer ? { freelancer: { stellarAddress: String(freelancer) } } : {}),
+        ...(status ? { status } : {}),
+        ...(client ? { client: { stellarAddress: client } } : {}),
+        ...(freelancer ? { freelancer: { stellarAddress: freelancer } } : {}),
       },
       include: { milestones: true, client: true, freelancer: true },
       orderBy: { createdAt: "desc" },
-      skip: (Number(page) - 1) * Number(limit),
-      take: Number(limit),
+      skip: (page - 1) * limit,
+      take: limit,
     });
     res.json(jobs);
   } catch (err) {
