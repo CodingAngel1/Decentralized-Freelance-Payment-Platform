@@ -32,7 +32,13 @@ pub struct Milestone {
     pub released: bool,
     /// How much of `amount` has already been released (starts at 0).
     pub released_amount: i128,
-    /// Unix timestamp after which the client may reclaim this milestone.
+    /// Unix timestamp by which this milestone is expected to be released.
+    ///
+    /// **Advisory only — the escrow does not enforce it.** There is no
+    /// per-milestone reclaim: `reclaim_expired` refunds *every* unreleased
+    /// milestone once the escrow-level `expiry` passes, and the contract never
+    /// reads a milestone's `deadline`. Treat it as descriptive metadata until
+    /// per-milestone reclaim is implemented (see issue #48).
     pub deadline: u64,
 }
 
