@@ -7,6 +7,7 @@
  *   /              → Dashboard (connect wallet, open a job by id)
  *   /post          → PostJob (client creates + funds a new escrow)
  *   /jobs/:id      → JobDetail (milestone tracker, release + dispute)
+ *   /jobs/:id/receipt → Receipt (printable/exportable record)
  *   /profile/:addr → Profile (reputation score)
  */
 
@@ -17,6 +18,7 @@ import AddressField from "./components/AddressField";
 import Dashboard from "./pages/Dashboard";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
+import Receipt from "./pages/Receipt";
 import Profile from "./pages/Profile";
 
 function Nav() {
@@ -50,6 +52,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/post" element={<PostJob />} />
           <Route path="/jobs/:id" element={<JobDetail />} />
+          <Route path="/jobs/:id/receipt" element={<Receipt />} />
           <Route path="/profile/:address" element={<Profile />} />
         </Routes>
       </BrowserRouter>

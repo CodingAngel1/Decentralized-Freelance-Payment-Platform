@@ -374,6 +374,15 @@ describe("JobDetail dispute timelock", () => {
   });
 });
 
+describe("JobDetail receipt link (#77)", () => {
+  it("links to the escrow's printable receipt", async () => {
+    render(<JobDetail />);
+
+    const link = await screen.findByRole("link", { name: "View receipt" });
+    expect(link.getAttribute("href")).toBe("/jobs/7/receipt");
+  });
+});
+
 describe("JobDetail milestone deadlines (#74)", () => {
   /** An Active escrow whose only milestone has the given deadline. */
   const activeWithDeadline = (deadline: bigint) => ({

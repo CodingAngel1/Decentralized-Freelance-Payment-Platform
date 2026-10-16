@@ -5,6 +5,7 @@ import {
   createDispute,
   createJob,
   fetchRatingsReceived,
+  fetchReceipt,
   fetchReminders,
   fetchTransactions,
   fetchUserJobs,
@@ -217,6 +218,35 @@ describe("fetchReminders", () => {
     );
 
     await expect(fetchReminders("GADDR")).rejects.toThrow(/HTTP 500/);
+  });
+});
+
+describe("fetchReceipt", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests the receipt for the escrow id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ escrowId: "7", milestones: [], events: [] }), {
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const receipt = await fetchReceipt(7n);
+
+    expect(receipt.escrowId).toBe("7");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/escrow/7/receipt");
+  });
+
+  it("throws with the status when there is no receipt for the escrow", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "not found" }), { status: 404 })),
+    );
+
+    await expect(fetchReceipt(7n)).rejects.toThrow(/HTTP 404/);
   });
 });
 

@@ -281,6 +281,9 @@ export default function JobDetail() {
 
       {escrow && (
         <>
+          <p className="job-actions">
+            <Link to={`/jobs/${escrowId}/receipt`}>View receipt</Link>
+          </p>
           <p>
             Status: <StatusBadge status={escrow.status} />
           </p>

@@ -175,6 +175,66 @@ export async function fetchReminders(
   return (await res.json()) as ReminderApi[];
 }
 
+/** One milestone as the receipt reports it. */
+export interface ReceiptMilestoneApi {
+  index: number;
+  description: string | null;
+  /** Whole units of the job's asset. */
+  amount: string;
+  status: string;
+  deadline: string | null;
+  releasedAt: string | null;
+}
+
+/** One indexed event as the receipt reports it. */
+export interface ReceiptEventApi {
+  id: string;
+  action: string;
+  /** Whole units of the job's asset, or null when the event moved nothing. */
+  amount: string | null;
+  /** Transaction that emitted the event, for the explorer link. */
+  txHash: string | null;
+  ledger: number;
+  createdAt: string;
+}
+
+/**
+ * A printable/exportable record of one escrow (issue #77): what was agreed, what
+ * was released, and the transaction behind each step.
+ */
+export interface EscrowReceiptApi {
+  escrowId: string;
+  generatedAt: string;
+  job: {
+    id: string;
+    title: string;
+    description: string;
+    status: string;
+    asset: string;
+    totalAmount: string;
+    createdAt: string;
+    expiresAt: string | null;
+    client: { stellarAddress: string; displayName: string | null } | null;
+    freelancer: { stellarAddress: string; displayName: string | null } | null;
+  };
+  milestones: ReceiptMilestoneApi[];
+  events: ReceiptEventApi[];
+  totals: { released: string; outstanding: string };
+}
+
+/** Fetch the receipt for an escrow. Throws, with the status, on a non-2xx. */
+export async function fetchReceipt(
+  escrowId: string | number | bigint,
+  signal?: AbortSignal,
+): Promise<EscrowReceiptApi> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/escrow/${encodeURIComponent(String(escrowId))}/receipt`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load the receipt (HTTP ${res.status})`);
+  return (await res.json()) as EscrowReceiptApi;
+}
+
 // ---------------------------------------------------------------------------
 // Authenticated writes
 // ---------------------------------------------------------------------------

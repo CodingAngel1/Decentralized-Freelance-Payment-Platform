@@ -40,3 +40,11 @@ export function formatDeadline(deadline: bigint): string {
 export function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
+
+/**
+ * An ISO timestamp as a local date and time. Used on the escrow receipt, where
+ * the moment a release or a refund happened is part of the record.
+ */
+export function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString();
+}
