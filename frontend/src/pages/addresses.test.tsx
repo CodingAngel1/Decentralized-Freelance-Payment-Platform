@@ -54,6 +54,11 @@ vi.mock("../lib/api", () => ({
   createJob: vi.fn(),
   linkEscrowId: vi.fn(),
   submitRating: vi.fn(),
+  // The job page mounts the conversation and the nav badge reads unread counts.
+  fetchMessages: vi.fn(async () => []),
+  sendMessage: vi.fn(),
+  markMessagesRead: vi.fn(async () => 0),
+  fetchUnreadCounts: vi.fn(async () => ({ total: 0, byJob: [] })),
 }));
 
 import Dashboard from "./Dashboard";

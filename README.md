@@ -213,6 +213,22 @@ in-process, polling Soroban RPC for the configured contracts and applying events
 to the database. Failures are recorded in `IndexerDeadLetter` rather than
 dropped, and the cursor is persisted so restarts resume where they left off.
 
+### OpenAPI spec
+
+The routes are also described in OpenAPI 3.0, generated from the same Zod
+schemas `validate()` enforces so the spec and the validation cannot drift.
+Outside production the API serves the document and a Swagger UI explorer:
+
+| Path | Purpose |
+|------|---------|
+| `GET /api/docs` | Swagger UI explorer |
+| `GET /api/docs/openapi.json` | The raw OpenAPI 3.0 document |
+
+Both are registered only when `NODE_ENV !== "production"`, so a deployed
+instance exposes neither. Add a new route to `backend/src/openapi.ts`;
+`backend/src/__tests__/openapi.test.ts` walks the routers and fails if one is
+missing from the spec.
+
 ## Frontend
 
 React + TypeScript + Vite, with Freighter for signing.
@@ -254,6 +270,17 @@ pending state stops double submits. Every address on screen is copyable in one
 click and can be expanded into a QR code to scan into a wallet
 (`frontend/src/components/AddressField.tsx`) — a `G…` address is 56 characters,
 and selecting one by hand is how funds reach the wrong account.
+
+Every write also reports its lifecycle as a toast (`building → awaiting
+signature → confirmed / failed`) that links the confirmed transaction on
+stellar.expert and shows the mapped contract-error message on failure
+(`frontend/src/components/Toaster.tsx`) — feedback that survives navigation,
+unlike the inline messages alone. The job page carries the client↔freelancer
+conversation (`frontend/src/components/Conversation.tsx`); opening a thread
+records the read receipt, and unread counts appear next to each job and on the
+nav. A milestone set can be saved as a template and re-applied from the
+post-a-job form (`frontend/src/lib/templates.ts`, stored per wallet in the
+browser).
 
 ## Stack
 

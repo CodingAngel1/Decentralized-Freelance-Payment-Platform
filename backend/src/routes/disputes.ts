@@ -118,7 +118,7 @@ async function loadDispute(id: string): Promise<DisputeWithParties> {
 // exist (the contract refuses a second `raise` for the same escrow), so the
 // first caller's reason wins and the second call is a no-op that returns the
 // same dispute.
-const raiseSchema = z.object({
+export const raiseSchema = z.object({
   jobId: z.string(),
   reason: z.string().min(10).max(1000),
 });
@@ -216,7 +216,7 @@ disputesRouter.post("/:id/raise", requireAuth, async (req, res, next) => {
 // The indexer reaches the same conclusion from the `raised` event, so this is
 // not the only writer — it just makes the id available to `/:id/resolve`
 // immediately instead of whenever the next poll lands.
-const syncSchema = z.object({
+export const syncSchema = z.object({
   onChainId: z.number().int().nonnegative(),
 });
 
@@ -240,7 +240,7 @@ disputesRouter.post("/:id/sync", requireAuth, validate(syncSchema), async (req, 
 });
 
 // POST /api/disputes/:id/resolve  (arbitrator only)
-const resolveSchema = z.object({
+export const resolveSchema = z.object({
   clientShare: z.number().min(0),
   freelancerShare: z.number().min(0),
 });

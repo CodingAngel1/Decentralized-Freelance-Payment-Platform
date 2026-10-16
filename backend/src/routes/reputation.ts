@@ -32,7 +32,7 @@ const networkPassphrase =
   config.STELLAR_NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 
 // POST /api/reputation
-const submitSchema = z.object({
+export const submitSchema = z.object({
   jobId: z.string(),
   rateeAddress: z.string().refine(isValidStellarAddress, "Invalid Stellar address"),
   score: z.number().int().min(1).max(5),

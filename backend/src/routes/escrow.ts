@@ -108,7 +108,7 @@ async function loadEditableJob(escrowId: bigint, address: string) {
 }
 
 // POST /api/escrow/build/create
-const buildCreateSchema = z.object({
+export const buildCreateSchema = z.object({
   jobId: z.string(),
   freelancerAddress: z.string().refine(isValidStellarAddress, "Invalid Stellar address"),
   expiryTimestamp: z.number().int().positive(),
@@ -155,7 +155,7 @@ escrowRouter.post("/build/create", requireAuth, validate(buildCreateSchema), asy
 });
 
 /** A milestone being edited, in whole units (the UI's unit), deadline optional. */
-const editableMilestoneSchema = z.object({
+export const editableMilestoneSchema = z.object({
   description: z.string().max(200).optional(),
   amountUsdc: z.number().positive(),
   deadline: z.string().datetime().optional(),
@@ -212,7 +212,7 @@ escrowRouter.post(
 // `create`/`fund`. The indexer still reconciles the total from the event
 // (`handleMilestonesUpdated` in indexer.ts), so an edit that is never recorded
 // still cannot leave a stale total behind.
-const recordMilestonesSchema = z.object({
+export const recordMilestonesSchema = z.object({
   milestones: z.array(editableMilestoneSchema).min(1),
 });
 

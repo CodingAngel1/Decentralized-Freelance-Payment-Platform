@@ -30,9 +30,14 @@ const STATUSES = ["CREATED", "FUNDED", "ACTIVE", "COMPLETED", "DISPUTED", "REFUN
 
 export default function Dashboard() {
   const { publicKey, connecting, connect, error: walletError } = useWallet();
+  // Per-job unread counts, so a job with a new message is visible from the list
+  // without opening it (issue #64).
+  const { byJob } = useUnread();
   const [jobId, setJobId] = useState("");
   const [jobIdError, setJobIdError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  const unreadFor = (id: string) => byJob.find((entry) => entry.jobId === id)?.count ?? 0;
 
   const [status, setStatus] = useState("");
   const [tag, setTag] = useState("");

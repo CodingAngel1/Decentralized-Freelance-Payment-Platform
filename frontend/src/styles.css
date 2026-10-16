@@ -136,6 +136,61 @@ fieldset {
   padding: 1rem;
 }
 
+/* --- Toasts ------------------------------------------------------------- */
+
+/* Fixed so a confirmation is still visible after navigating to another page. */
+.toaster {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(360px, calc(100vw - 2rem));
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(31, 41, 51, 0.12);
+  font-size: 0.9rem;
+}
+
+.toast-message {
+  flex: 1;
+}
+
+.toast-building,
+.toast-signing {
+  border-color: #bcd4f6;
+  background: #e6f0fd;
+}
+
+.toast-confirmed {
+  border-color: #b7e0c4;
+  background: #e7f5ec;
+  color: #146c2e;
+}
+
+.toast-failed {
+  border-color: #f4c7c3;
+  background: #fdecea;
+  color: var(--danger);
+}
+
+.toast-dismiss {
+  padding: 0 0.35rem;
+  border: none;
+  background: transparent;
+  line-height: 1;
+}
+
 /* --- Status badges ------------------------------------------------------ */
 
 .badge {

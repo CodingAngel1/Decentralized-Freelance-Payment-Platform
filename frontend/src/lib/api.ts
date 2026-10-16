@@ -9,9 +9,31 @@
  *   (`backend/src/indexer.ts`) syncs chain state into the database. A job can
  *   therefore appear here without this client having created it.
  * - `totalAmountUsdc`/`escrowId` come from Prisma and may serialize as strings.
+ * - `authenticate` caches the JWT it gets back, per address: signing the
+ *   challenge prompts the wallet, and the messaging view would otherwise prompt
+ *   on every unread refresh. See the comment on the cache below.
  */
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+
+/**
+ * How long a token from `authenticate` is reused.
+ *
+ * Deliberately under the server's 7-day JWT expiry, so a cached token is never
+ * presented after the server has stopped accepting it.
+ */
+const TOKEN_TTL_MS = 6 * 24 * 60 * 60 * 1000;
+
+/** Signed-in sessions, keyed by Stellar address. */
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+/** In-flight challenges, so two components mounting together share one prompt. */
+const pendingAuth = new Map<string, Promise<string>>();
+
+/** Drop a cached token (all addresses when called with none). */
+export function clearAuthToken(address?: string): void {
+  if (address === undefined) tokenCache.clear();
+  else tokenCache.delete(address);
+}
 
 export interface JobListQuery {
   status?: string;
@@ -318,28 +340,52 @@ export async function unsaveJob(jobId: string, token: string): Promise<void> {
 /**
  * Complete the wallet challenge-response flow and return a bearer token.
  * `signMessage` signs the challenge nonce per SEP-53 (see Freighter).
+ *
+ * The token is cached per address and reused for `TOKEN_TTL_MS`, because every
+ * signature is a wallet prompt: without this, a page that refreshes an
+ * authenticated read would ask the user to sign each time. Concurrent callers
+ * that miss the cache share a single in-flight challenge for the same reason.
+ * Pass `{ fresh: true }` to force a new challenge (e.g. after a 401).
  */
 export async function authenticate(
   address: string,
   signMessage: (message: string) => Promise<string>,
+  options: { fresh?: boolean } = {},
 ): Promise<string> {
-  const challengeRes = await fetch(
-    `${API_BASE_URL}/api/users/challenge?address=${encodeURIComponent(address)}`,
-  );
-  if (!challengeRes.ok) {
-    throw new Error(`Could not get an auth challenge (HTTP ${challengeRes.status})`);
+  if (!options.fresh) {
+    const cached = tokenCache.get(address);
+    if (cached && cached.expiresAt > Date.now()) return cached.token;
+    const inflight = pendingAuth.get(address);
+    if (inflight) return inflight;
   }
-  const { nonce } = (await challengeRes.json()) as { nonce: string };
 
-  const signature = await signMessage(nonce);
-  const authRes = await fetch(`${API_BASE_URL}/api/users/auth`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ address, signature, nonce }),
-  });
-  if (!authRes.ok) throw new Error(`Authentication failed (HTTP ${authRes.status})`);
-  const { token } = (await authRes.json()) as { token: string };
-  return token;
+  const challenge = (async () => {
+    const challengeRes = await fetch(
+      `${API_BASE_URL}/api/users/challenge?address=${encodeURIComponent(address)}`,
+    );
+    if (!challengeRes.ok) {
+      throw new Error(`Could not get an auth challenge (HTTP ${challengeRes.status})`);
+    }
+    const { nonce } = (await challengeRes.json()) as { nonce: string };
+
+    const signature = await signMessage(nonce);
+    const authRes = await fetch(`${API_BASE_URL}/api/users/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address, signature, nonce }),
+    });
+    if (!authRes.ok) throw new Error(`Authentication failed (HTTP ${authRes.status})`);
+    const { token } = (await authRes.json()) as { token: string };
+    tokenCache.set(address, { token, expiresAt: Date.now() + TOKEN_TTL_MS });
+    return token;
+  })();
+
+  pendingAuth.set(address, challenge);
+  try {
+    return await challenge;
+  } finally {
+    pendingAuth.delete(address);
+  }
 }
 
 /** Create the off-chain job record (requires a token from `authenticate`). */

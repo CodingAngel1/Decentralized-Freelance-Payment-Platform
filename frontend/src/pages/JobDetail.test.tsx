@@ -25,6 +25,10 @@ const h = vi.hoisted(() => ({
   recordRating: vi.fn(async () => ({ rating: {}, xdr: "x" })),
   createDispute: vi.fn(),
   linkDisputeId: vi.fn(),
+  // Mounted for a participant once the escrow id resolves to a job id (#64).
+  fetchMessages: vi.fn(async () => [] as unknown[]),
+  sendMessage: vi.fn(),
+  markMessagesRead: vi.fn(async () => 0),
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -50,6 +54,9 @@ vi.mock("../lib/api", () => ({
   submitRating: h.recordRating,
   createDispute: h.createDispute,
   linkDisputeId: h.linkDisputeId,
+  fetchMessages: h.fetchMessages,
+  sendMessage: h.sendMessage,
+  markMessagesRead: h.markMessagesRead,
 }));
 
 import JobDetail from "./JobDetail";
