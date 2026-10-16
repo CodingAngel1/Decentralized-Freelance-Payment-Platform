@@ -18,6 +18,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
+import FiatEstimate from "../components/FiatEstimate";
 import { useEscrow, type CreateAndFundResult } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { ASSETS, formatAmount, getAsset, toBaseUnits } from "../lib/assets";
@@ -276,7 +277,8 @@ export default function PostJob() {
             Add milestone
           </button>
           <p>
-            Total: <strong>{total}</strong> {asset.symbol}
+            Total: <strong>{total}</strong> {asset.symbol}{" "}
+            <FiatEstimate amount={total} asset={asset.symbol} />
           </p>
         </fieldset>
 

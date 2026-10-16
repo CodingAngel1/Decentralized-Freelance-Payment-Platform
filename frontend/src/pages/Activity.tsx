@@ -26,6 +26,7 @@
 import { useEffect, useState } from "react";
 import Layout from "../components/Layout";
 import AddressField from "../components/AddressField";
+import FiatEstimate from "../components/FiatEstimate";
 import { fetchJobs } from "../lib/api";
 import { summarizeActivity, type ActivitySummary } from "../lib/activity";
 import { useWallet } from "../hooks/wallet-context";
@@ -42,7 +43,8 @@ function Totals({ label, totals }: { label: string; totals: ActivitySummary["rel
       ) : (
         totals.map((total) => (
           <span key={total.symbol} className="amount">
-            {total.amount} {total.symbol}
+            {total.amount} {total.symbol}{" "}
+            <FiatEstimate amount={total.amount} asset={total.symbol} />
           </span>
         ))
       )}

@@ -291,3 +291,13 @@ fieldset {
   margin-right: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
+
+/* --- Fiat estimates (issue #76) ----------------------------------------- */
+
+/* Sits beside an amount without competing with it: smaller, muted, never bold. */
+.fiat {
+  font-size: 0.85em;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}

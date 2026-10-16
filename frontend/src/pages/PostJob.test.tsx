@@ -29,6 +29,11 @@ vi.mock("react-router-dom", () => ({
 }));
 
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
+// Fiat estimates (#76) read an external price feed; no rate in these tests.
+vi.mock("../lib/prices", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/prices")>()),
+  getFiatRates: async () => ({}),
+}));
 vi.mock("../hooks/useEscrow", () => ({ useEscrow: () => h.escrow }));
 // Only the addresses/explorer helpers are used here; skip loading the SDK.
 vi.mock("../lib/stellar", () => ({

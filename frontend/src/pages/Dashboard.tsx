@@ -18,6 +18,7 @@ import { Link, useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
+import FiatEstimate from "../components/FiatEstimate";
 import { fetchJobs, type JobApi } from "../lib/api";
 import { SKILL_TAGS, tagLabel } from "../lib/tags";
 import { useSavedJobs } from "../hooks/useSavedJobs";
@@ -197,7 +198,8 @@ export default function Dashboard() {
                 ) : (
                   "—"
                 )}{" "}
-                · Total: {String(job.totalAmountUsdc)} {job.asset ?? ""}
+                · Total: {String(job.totalAmountUsdc)} {job.asset ?? ""}{" "}
+                <FiatEstimate amount={String(job.totalAmountUsdc)} asset={job.asset ?? ""} />
               </span>
               <br />
               {job.escrowId !== null && job.escrowId !== undefined ? (

@@ -19,9 +19,16 @@ const h = vi.hoisted(() => ({
     disconnect: vi.fn(),
   },
   fetchJobs: vi.fn(),
+  // Fiat estimates read an external price feed (#76); this is what it returned.
+  rates: {} as Record<string, number>,
 }));
 
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
+// Stub the price lookup, keep the real maths: no test may touch the feed.
+vi.mock("../lib/prices", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/prices")>()),
+  getFiatRates: async () => h.rates,
+}));
 vi.mock("../lib/api", () => ({ fetchJobs: h.fetchJobs }));
 
 import Activity from "./Activity";
@@ -55,6 +62,7 @@ beforeEach(() => {
   h.wallet.connecting = false;
   h.wallet.error = null;
   h.wallet.connect.mockClear();
+  h.rates = {};
 });
 
 afterEach(() => cleanup());
@@ -147,6 +155,18 @@ describe("Activity summary", () => {
     expect(stat("Active escrows")).toBe("2");
     expect(stat("Completed jobs")).toBe("1");
     expect(stat("Total jobs")).toBe("4");
+  });
+
+  it("adds a fiat estimate to a released total (#76)", async () => {
+    h.rates = { XLM: 2 };
+    h.wallet.publicKey = WALLET;
+    respondByRole({
+      asFreelancer: [job({ milestones: [{ amountUsdc: "1.5", status: "RELEASED" }] })],
+    });
+    render(<Activity />);
+
+    await waitFor(() => expect(screen.getByText("1.5 XLM", { exact: false })).toBeTruthy());
+    expect(screen.getByText("$3.00")).toBeTruthy();
   });
 
   it("renders the released and still-locked totals per asset", async () => {

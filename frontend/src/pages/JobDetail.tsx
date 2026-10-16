@@ -29,6 +29,7 @@ import { Link, useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
+import FiatEstimate from "../components/FiatEstimate";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
@@ -284,14 +285,19 @@ export default function JobDetail() {
             <AddressField address={escrow.freelancer} label="Freelancer address" qr />
             {isFreelancer && " (you)"}
             <br />
-            Total: <strong>{fromBaseUnits(escrow.total_amount, decimals)}</strong> {symbol}
+            Total: <strong>{fromBaseUnits(escrow.total_amount, decimals)}</strong> {symbol}{" "}
+            <FiatEstimate
+              amount={fromBaseUnits(escrow.total_amount, decimals)}
+              asset={symbol}
+            />
           </p>
 
           <h2>Milestones</h2>
           <ol>
             {escrow.milestones.map((m, i) => (
               <li key={i}>
-                {fromBaseUnits(m.amount, decimals)} {symbol} —{" "}
+                {fromBaseUnits(m.amount, decimals)} {symbol}{" "}
+                <FiatEstimate amount={fromBaseUnits(m.amount, decimals)} asset={symbol} /> —{" "}
                 {m.released
                   ? "released"
                   : `${fromBaseUnits(m.released_amount, decimals)} released, ${fromBaseUnits(

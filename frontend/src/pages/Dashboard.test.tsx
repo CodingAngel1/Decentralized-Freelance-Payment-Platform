@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
   fetchSavedJobs: vi.fn(async () => [] as unknown[]),
   saveJob: vi.fn(async () => undefined),
   unsaveJob: vi.fn(async () => undefined),
+  // Fiat estimates read an external price feed (#76); this is what it returned.
+  rates: {} as Record<string, number>,
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -35,6 +37,11 @@ vi.mock("react-router-dom", () => ({
   ),
 }));
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
+// Stub the price lookup, keep the real maths: no test may touch the feed.
+vi.mock("../lib/prices", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/prices")>()),
+  getFiatRates: async () => h.rates,
+}));
 vi.mock("../lib/api", () => ({
   fetchJobs: h.fetchJobs,
   authenticate: h.authenticate,
@@ -80,6 +87,7 @@ beforeEach(() => {
   h.wallet.connecting = false;
   h.wallet.error = null;
   h.wallet.connect.mockClear();
+  h.rates = {};
 });
 
 afterEach(() => cleanup());
@@ -169,6 +177,25 @@ describe("Dashboard job list", () => {
     render(<Dashboard />);
 
     expect(await screen.findByText("Landing page redesign")).toBeTruthy();
+  });
+
+  it("shows an approximate fiat figure beside a job's total (#76)", async () => {
+    h.rates = { XLM: 2 };
+    h.fetchJobs.mockResolvedValue([job({ totalAmountUsdc: 1.5, asset: "XLM" })]);
+
+    render(<Dashboard />);
+
+    await screen.findByText("Landing page redesign");
+    expect(await screen.findByText("$3.00")).toBeTruthy();
+  });
+
+  it("leaves the total alone when no rate is available (#76)", async () => {
+    h.fetchJobs.mockResolvedValue([job({ totalAmountUsdc: 1.5, asset: "XLM" })]);
+
+    render(<Dashboard />);
+
+    await screen.findByText("Landing page redesign");
+    expect(screen.queryByText(/≈/)).toBeNull();
   });
 
   it("bookmarks a job and reflects it on the button", async () => {

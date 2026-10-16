@@ -235,6 +235,15 @@ both roles (paid out as client, earned as freelancer), with the role counts
 shown next to it, and the page states that its two reads are capped at the API's
 100-job maximum per role.
 
+`/activity` and every other screen that shows an amount also shows an
+approximate fiat figure (`frontend/src/components/FiatEstimate.tsx`, issue
+#76), sourced from CoinGecko's keyless `simple/price` feed and cached for five
+minutes (`frontend/src/lib/prices.ts`). The figure is always labelled `est.`,
+and when the feed is slow, rate-limited or down, nothing is shown at all — an
+estimate never blocks or alters the amount it sits beside. `VITE_PRICE_API_URL`
+and `VITE_PRICE_API_KEY` are optional overrides; the default needs no
+configuration.
+
 Every write shows the transaction hash and a stellar.expert link, contract errors
 are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target
 pending state stops double submits. Every address on screen is copyable in one
