@@ -37,6 +37,10 @@ const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
 const TTL_EXTEND_TO: u32 = 90 * DAY_IN_LEDGERS;
 /// Seconds after a dispute is opened before the client can reclaim.
 const DISPUTE_TIMEOUT_SECONDS: u64 = 7 * 24 * 60 * 60;
+/// Maximum number of milestones per escrow. Keeps every loop within the
+/// Soroban CPU budget and prevents `resolve`/`remaining` from being blocked
+/// by an unbounded list. Must match the cap enforced by the frontend.
+pub const MAX_MILESTONES: u32 = 20;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -184,6 +188,9 @@ impl EscrowContract {
         if milestones.is_empty() {
             return Err(EscrowError::InvalidMilestones);
         }
+        if milestones.len() > MAX_MILESTONES {
+            return Err(EscrowError::TooManyMilestones);
+        }
         if client == freelancer {
             return Err(EscrowError::InvalidCounterparty);
         }
@@ -243,6 +250,9 @@ impl EscrowContract {
         }
         if milestones.is_empty() {
             return Err(EscrowError::InvalidMilestones);
+        }
+        if milestones.len() > MAX_MILESTONES {
+            return Err(EscrowError::TooManyMilestones);
         }
 
         let mut total_amount: i128 = 0;
@@ -544,7 +554,10 @@ impl EscrowContract {
 
         // Effects before interaction: mark every milestone fully released and complete.
         for i in 0..escrow.milestones.len() {
-            let mut m = escrow.milestones.get(i).unwrap();
+            let mut m = escrow
+                .milestones
+                .get(i)
+                .ok_or(EscrowError::MilestoneIndexOutOfBounds)?;
             m.released = true;
             m.released_amount = m.amount;
             escrow.milestones.set(i, m);
