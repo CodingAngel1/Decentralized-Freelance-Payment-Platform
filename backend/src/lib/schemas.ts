@@ -7,6 +7,7 @@
  */
 
 import { z } from "zod";
+import { isValidStellarAddress } from "./stellarAddress";
 
 /**
  * A milestone amount: a positive number, or a positive decimal string.
@@ -37,3 +38,10 @@ export const createJobSchema = z.object({
   /** Asset symbol the job pays in; must be in the registry. Defaults to USDC. */
   asset: z.string().default("USDC"),
 });
+
+export const assignJobSchema = z.object({
+  freelancerAddress: z
+    .string()
+    .refine(isValidStellarAddress, "Invalid Stellar address"),
+});
+

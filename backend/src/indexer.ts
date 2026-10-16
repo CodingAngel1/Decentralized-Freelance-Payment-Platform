@@ -56,7 +56,7 @@ import {
 } from "./lib/events";
 
 const CURSOR_ID = "main";
-const EVENT_PAGE_LIMIT = 100;
+export const EVENT_PAGE_LIMIT = 100;
 
 /** Longest error message persisted to IndexerDeadLetter.error. */
 const MAX_ERROR_LENGTH = 500;
@@ -87,9 +87,10 @@ const rpcServer = new SorobanRpc.Server(config.SOROBAN_RPC_URL, { allowHttp: fal
 /** Minimal surface of `SorobanRpc.Server` the indexer needs (for testing). */
 export interface SorobanEventSource {
   getEvents(request: {
-    startLedger: number;
+    startLedger?: number;
     filters: SorobanRpc.Api.EventFilter[];
     limit?: number;
+    cursor?: string;
   }): Promise<{ events: ContractEventLike[]; latestLedger: number }>;
   /**
    * Chain tip, used to keep `startLedger` inside the RPC's retention window.
@@ -207,31 +208,60 @@ export async function processContractEvents(
     contractIds: [contractId],
   }));
 
-  const startLedger = await resolveStartLedger(source, lastLedger);
+  let currentStartLedger: number | undefined = await resolveStartLedger(source, lastLedger);
+  let currentCursor: string | undefined = undefined;
+  let maxLatestLedger = lastLedger;
 
-  const res = await source.getEvents({
-    startLedger,
-    filters,
-    limit: EVENT_PAGE_LIMIT,
-  });
+  while (true) {
+    const res = await source.getEvents({
+      ...(currentCursor ? { cursor: currentCursor } : { startLedger: currentStartLedger }),
+      filters,
+      limit: EVENT_PAGE_LIMIT,
+    });
 
-  for (const event of res.events) {
-    try {
-      await dispatch(event);
-    } catch (err) {
-      // One bad event must not block the rest of the batch.
-      console.error(`[indexer] failed to process event ${event.id ?? "?"}`, err);
-      // Recording the failure must never take the poller down with it.
+    maxLatestLedger = Math.max(maxLatestLedger, res.latestLedger);
+
+    for (const event of res.events) {
       try {
-        await onError(event, err);
-      } catch (storeErr) {
-        console.error("[indexer] could not record the failed event", storeErr);
+        await dispatch(event);
+      } catch (err) {
+        // One bad event must not block the rest of the batch.
+        console.error(`[indexer] failed to process event ${event.id ?? "?"}`, err);
+        // Recording the failure must never take the poller down with it.
+        try {
+          await onError(event, err);
+        } catch (storeErr) {
+          console.error("[indexer] could not record the failed event", storeErr);
+        }
       }
+    }
+
+    if (res.events.length < EVENT_PAGE_LIMIT) {
+      break;
+    }
+
+    const lastEvent = res.events[res.events.length - 1];
+    if (lastEvent?.id) {
+      if (lastEvent.id === currentCursor) {
+        // Cursor did not advance, break to avoid an infinite loop
+        break;
+      }
+      currentCursor = lastEvent.id;
+      currentStartLedger = undefined;
+    } else if (lastEvent?.ledger) {
+      const nextLedger = lastEvent.ledger + 1;
+      if (currentStartLedger !== undefined && nextLedger <= currentStartLedger) {
+        break;
+      }
+      currentStartLedger = nextLedger;
+      currentCursor = undefined;
+    } else {
+      break;
     }
   }
 
-  // Advance only after every event in the batch has been attempted.
-  const next = Math.max(lastLedger, res.latestLedger);
+  // Advance only after every event across all pages has been attempted.
+  const next = Math.max(lastLedger, maxLatestLedger);
   await cursor.set(next);
   return next;
 }

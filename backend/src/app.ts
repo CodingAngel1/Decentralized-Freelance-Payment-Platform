@@ -16,6 +16,10 @@ import { reputationRouter } from "./routes/reputation";
 export function createApp() {
   const app = express();
 
+  if (config.TRUST_PROXY > 0) {
+    app.set("trust proxy", config.TRUST_PROXY);
+  }
+
   app.use(helmet());
 
   // CORS_ORIGIN is a comma-separated allowlist of browser origins. When it is

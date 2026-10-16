@@ -21,6 +21,10 @@ const schema = z.object({
   // frontend). Empty means "no restriction" in development, but production
   // warns loudly because that allows every origin.
   CORS_ORIGIN: z.string().default(""),
+  // Reverse proxy hop count (e.g. 1 behind Render, Heroku, or Nginx).
+  // Configures Express 'trust proxy' so rate limiting keys on the real client IP.
+  // 0 disables proxy trust (default).
+  TRUST_PROXY: z.coerce.number().int().min(0).default(0),
 });
 
 const parsed = schema.safeParse(process.env);

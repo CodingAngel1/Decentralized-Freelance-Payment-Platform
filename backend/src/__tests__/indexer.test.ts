@@ -8,6 +8,7 @@ import {
   type ContractEventLike,
 } from "../lib/events";
 import {
+  EVENT_PAGE_LIMIT,
   EVENT_TOPIC_FIELDS,
   applyRatedEvent,
   handleDisputeOpened,
@@ -184,6 +185,148 @@ describe("processContractEvents", () => {
     expect(order[0]).toBe("getEvents");
     expect(order[order.length - 1]).toBe("set:12");
   });
+
+  it("paginates through multiple pages before advancing the cursor to the tip", async () => {
+    const page1Events: ContractEventLike[] = Array.from({ length: EVENT_PAGE_LIMIT }, (_, i) => ({
+      id: `evt-page1-${i}`,
+      ledger: 10 + Math.floor(i / 20),
+      topic: [xdr.ScVal.scvSymbol("funded")],
+      value: mapVal({ escrow_id: nativeToScVal(BigInt(i), { type: "u64" }) }),
+    }));
+    const page2Events: ContractEventLike[] = Array.from({ length: 35 }, (_, i) => ({
+      id: `evt-page2-${i}`,
+      ledger: 15 + Math.floor(i / 20),
+      topic: [xdr.ScVal.scvSymbol("funded")],
+      value: mapVal({ escrow_id: nativeToScVal(BigInt(100 + i), { type: "u64" }) }),
+    }));
+
+    const requests: unknown[] = [];
+    const source = {
+      getEvents: vi.fn(async (req) => {
+        requests.push(req);
+        if (requests.length === 1) {
+          return { events: page1Events, latestLedger: 20 };
+        }
+        return { events: page2Events, latestLedger: 20 };
+      }),
+    };
+
+    let cursorValue = 5;
+    const cursorOrder: string[] = [];
+    const cursor = {
+      get: async () => cursorValue,
+      set: async (ledger: number) => {
+        cursorOrder.push(`set:${ledger}`);
+        cursorValue = ledger;
+      },
+    };
+
+    const dispatched: string[] = [];
+    const dispatch = vi.fn(async (event: ContractEventLike) => {
+      dispatched.push(event.id!);
+    });
+
+    const next = await processContractEvents(source, cursor, [CONTRACT], dispatch);
+
+    // Two pages fetched
+    expect(source.getEvents).toHaveBeenCalledTimes(2);
+    // First call uses startLedger
+    expect(requests[0]).toMatchObject({ startLedger: 6, limit: EVENT_PAGE_LIMIT });
+    // Second call uses pagination cursor from the last event of page 1
+    expect(requests[1]).toMatchObject({
+      cursor: `evt-page1-${EVENT_PAGE_LIMIT - 1}`,
+      limit: EVENT_PAGE_LIMIT,
+    });
+
+    // All 135 events dispatched in exact order
+    expect(dispatched).toHaveLength(EVENT_PAGE_LIMIT + 35);
+    expect(dispatched[0]).toBe("evt-page1-0");
+    expect(dispatched[EVENT_PAGE_LIMIT - 1]).toBe(`evt-page1-${EVENT_PAGE_LIMIT - 1}`);
+    expect(dispatched[EVENT_PAGE_LIMIT]).toBe("evt-page2-0");
+    expect(dispatched[EVENT_PAGE_LIMIT + 34]).toBe("evt-page2-34");
+
+    // Cursor is only advanced ONCE, at the very end
+    expect(cursorOrder).toEqual(["set:20"]);
+    expect(cursorValue).toBe(20);
+    expect(next).toBe(20);
+  });
+
+  it("handles pagination when event count is an exact multiple of page limit", async () => {
+    const page1Events: ContractEventLike[] = Array.from({ length: EVENT_PAGE_LIMIT }, (_, i) => ({
+      id: `evt-exact-${i}`,
+      ledger: 10,
+      topic: [xdr.ScVal.scvSymbol("funded")],
+      value: mapVal({ escrow_id: nativeToScVal(BigInt(i), { type: "u64" }) }),
+    }));
+
+    const source = {
+      getEvents: vi
+        .fn()
+        .mockResolvedValueOnce({ events: page1Events, latestLedger: 15 })
+        .mockResolvedValueOnce({ events: [], latestLedger: 15 }),
+    };
+
+    let cursorValue = 5;
+    const cursor = {
+      get: async () => cursorValue,
+      set: async (ledger: number) => {
+        cursorValue = ledger;
+      },
+    };
+
+    const dispatch = vi.fn();
+    const next = await processContractEvents(source, cursor, [CONTRACT], dispatch);
+
+    expect(source.getEvents).toHaveBeenCalledTimes(2);
+    expect(dispatch).toHaveBeenCalledTimes(EVENT_PAGE_LIMIT);
+    expect(cursorValue).toBe(15);
+    expect(next).toBe(15);
+  });
+
+  it("advances startLedger across pages when events omit id", async () => {
+    const page1Events: ContractEventLike[] = Array.from({ length: EVENT_PAGE_LIMIT }, (_, i) => ({
+      ledger: 10,
+      topic: [xdr.ScVal.scvSymbol("funded")],
+      value: mapVal({ escrow_id: nativeToScVal(BigInt(i), { type: "u64" }) }),
+    }));
+    const page2Events: ContractEventLike[] = [
+      {
+        ledger: 11,
+        topic: [xdr.ScVal.scvSymbol("funded")],
+        value: mapVal({ escrow_id: nativeToScVal(1n, { type: "u64" }) }),
+      },
+    ];
+
+    const requests: unknown[] = [];
+    const source = {
+      getEvents: vi.fn(async (req) => {
+        requests.push(req);
+        if (requests.length === 1) {
+          return { events: page1Events, latestLedger: 12 };
+        }
+        return { events: page2Events, latestLedger: 12 };
+      }),
+    };
+
+    let cursorValue = 5;
+    const cursor = {
+      get: async () => cursorValue,
+      set: async (ledger: number) => {
+        cursorValue = ledger;
+      },
+    };
+
+    const dispatch = vi.fn();
+    const next = await processContractEvents(source, cursor, [CONTRACT], dispatch);
+
+    expect(source.getEvents).toHaveBeenCalledTimes(2);
+    expect(requests[0]).toMatchObject({ startLedger: 6 });
+    expect(requests[1]).toMatchObject({ startLedger: 11 });
+    expect(dispatch).toHaveBeenCalledTimes(EVENT_PAGE_LIMIT + 1);
+    expect(cursorValue).toBe(12);
+    expect(next).toBe(12);
+  });
+
 
   it("starts a fresh indexer inside the RPC's ledger window", async () => {
     // Ledger 1 is far outside what Soroban RPC retains, so a fresh cursor has to

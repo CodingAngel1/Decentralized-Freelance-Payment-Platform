@@ -325,6 +325,7 @@ not just a restart.
 | `ARBITRATOR_ADDRESSES` | for dispute resolution | Comma-separated panel addresses allowed to call `POST /api/disputes/:id/resolve`. **Empty disables the route** — it fails closed |
 | `CORS_ORIGIN` | for production | Comma-separated browser origins allowed to call the API. Empty allows every origin and logs a warning in production |
 | `INDEXER_POLL_INTERVAL_MS` | — | Defaults to `5000` |
+| `TRUST_PROXY` | — | Reverse proxy hop count (e.g. `1` behind Render/Heroku/Nginx) so rate limiting keys on real client IP. Defaults to `0` |
 | `PORT` | — | Defaults to `3000` |
 
 ## Testing
