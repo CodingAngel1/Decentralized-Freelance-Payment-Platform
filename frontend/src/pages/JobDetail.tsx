@@ -29,6 +29,7 @@ import { Link, useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
+import JobDetailSkeleton from "../components/JobDetailSkeleton";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
@@ -266,10 +267,24 @@ export default function JobDetail() {
       )}
 
       {(error || loadError) && (
-        <p role="alert" aria-live="assertive" className="alert alert-error">
-          {error ?? loadError}
-        </p>
+        <div className="error-state">
+          <p role="alert" aria-live="assertive" className="alert alert-error">
+            {error ?? loadError}
+          </p>
+          <button
+            type="button"
+            className="btn-retry"
+            onClick={() => {
+              setLoadError(null);
+              void refresh();
+            }}
+          >
+            Retry
+          </button>
+        </div>
       )}
+
+      {!escrow && !error && !loadError && <JobDetailSkeleton />}
 
       {escrow && (
         <>

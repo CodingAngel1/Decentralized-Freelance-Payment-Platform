@@ -10,6 +10,7 @@ import { Link, useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
+import JobListSkeleton from "../components/JobListSkeleton";
 import { fetchJobs, type JobApi } from "../lib/api";
 import { useWallet } from "../hooks/wallet-context";
 
@@ -120,21 +121,43 @@ export default function Dashboard() {
       </label>
 
       {jobsError && (
-        <p role="alert" aria-live="assertive" className="alert alert-error">
-          {jobsError}
-        </p>
+        <div className="error-state">
+          <p role="alert" aria-live="assertive" className="alert alert-error">
+            {jobsError}
+          </p>
+          <button
+            type="button"
+            className="btn-retry"
+            onClick={() => void load(page, false)}
+          >
+            Retry
+          </button>
+        </div>
       )}
 
-      {jobsLoading && jobs.length === 0 && (
-        <p role="status" aria-live="polite">
-          Loading jobs…
-        </p>
-      )}
+      {jobsLoading && jobs.length === 0 && <JobListSkeleton />}
 
       {!jobsLoading && !jobsError && jobs.length === 0 && (
-        <p className="muted" role="status" aria-live="polite">
-          No jobs found.
-        </p>
+        <div className="empty-state card" role="status" aria-live="polite">
+          <div className="empty-state-icon" aria-hidden="true">
+            📋
+          </div>
+          <h3>No jobs found.</h3>
+          <p className="muted">
+            {status
+              ? `No jobs match the "${status}" status filter.`
+              : "No jobs have been posted yet. Create a new job to get started."}
+          </p>
+          {status ? (
+            <button type="button" onClick={() => setStatus("")}>
+              Clear filter
+            </button>
+          ) : (
+            <Link to="/post" className="btn-primary">
+              Post a job →
+            </Link>
+          )}
+        </div>
       )}
 
       {jobs.length > 0 && (

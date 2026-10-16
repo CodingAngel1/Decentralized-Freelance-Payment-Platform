@@ -412,3 +412,156 @@ svg {
 .qr-code {
   display: block;
 }
+
+/* --- Accessibility & Utility ------------------------------------------- */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* --- Skeletons & Async States ------------------------------------------ */
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--border) 25%,
+    var(--surface) 50%,
+    var(--border) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite ease-in-out;
+  border-radius: var(--radius);
+  display: inline-block;
+}
+
+.skeleton-container {
+  width: 100%;
+}
+
+.skeleton-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.skeleton-title {
+  width: 45%;
+  height: 1.25rem;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+.skeleton-badge {
+  width: 70px;
+  height: 1.25rem;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+
+.skeleton-subtext {
+  width: 70%;
+  height: 0.9rem;
+  margin: 0.4rem 0;
+}
+
+.skeleton-link {
+  width: 25%;
+  height: 0.9rem;
+  margin-top: 0.25rem;
+}
+
+.skeleton-job-item {
+  padding: 0.75rem 0;
+}
+
+.job-detail-skeleton {
+  margin: 1.5rem 0;
+}
+
+.skeleton-row {
+  margin: 0.75rem 0;
+}
+
+.skeleton-label {
+  color: var(--muted);
+  margin-right: 0.5rem;
+}
+
+.skeleton-milestone-list {
+  padding-left: 1.25rem;
+}
+
+.skeleton-milestone-item {
+  margin: 0.5rem 0;
+}
+
+/* --- Empty and Error States --------------------------------------------- */
+
+.empty-state {
+  text-align: center;
+  padding: 2.5rem 1.5rem;
+  margin: 1.5rem 0;
+  background: var(--surface);
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.empty-state-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.5rem;
+  line-height: 1;
+}
+
+.empty-state h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.2rem;
+  color: var(--text);
+}
+
+.empty-state p {
+  margin: 0 0 1.25rem;
+  color: var(--muted);
+}
+
+.error-state {
+  margin: 1rem 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.error-state .alert-error {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+.btn-retry {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+}
+
+.btn-retry:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
