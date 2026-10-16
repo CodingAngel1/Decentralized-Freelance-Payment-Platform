@@ -1,14 +1,22 @@
 /**
  * jobs.ts
  *
- * GET  /api/jobs          — list jobs (filterable by status, client, freelancer)
+ * GET  /api/jobs          — list jobs (filterable by status, client, freelancer, tag)
  * POST /api/jobs          — create a job (off-chain record; escrow funded separately)
+ * GET  /api/jobs/tags     — the curated skill-tag list
+ * GET  /api/jobs/saved    — the caller's bookmarked jobs
+ * POST /api/jobs/:id/save   — bookmark a job
+ * DELETE /api/jobs/:id/save — remove a bookmark
  * GET  /api/jobs/:id      — get single job with milestones
  * PUT  /api/jobs/:id/assign — client assigns a freelancer
+ *
+ * Route order matters: the literal paths (`/tags`, `/saved`) are registered
+ * before `/:id`, or they would be read as job ids.
  */
 
 import { Router } from "express";
 import { z } from "zod";
+import type { JobStatus } from "@prisma/client";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -21,7 +29,8 @@ import {
   UnknownAssetError,
   type AssetInfo,
 } from "../lib/assets";
-import { createJobSchema, listJobsQuerySchema } from "../lib/schemas";
+import { createJobSchema } from "../lib/schemas";
+import { isSkillTag, SKILL_TAGS, SKILL_TAG_SLUGS } from "../lib/tags";
 
 export const jobsRouter = Router();
 
@@ -33,17 +42,27 @@ export const jobsRouter = Router();
 // was unbounded.
 jobsRouter.get("/", async (req, res, next) => {
   try {
-    const parsed = listJobsQuerySchema.safeParse(req.query);
-    if (!parsed.success) {
-      throw new AppError(400, parsed.error.issues.map((i) => i.message).join(", "));
+    const { status, client, freelancer, tag, page = "1", limit = "20" } = req.query;
+
+    // A tag the taxonomy does not know is a caller mistake, not "no results" —
+    // answering 400 with the accepted slugs keeps a typo from looking like an
+    // empty marketplace.
+    let tagFilter: string | undefined;
+    if (tag !== undefined) {
+      const value = String(tag);
+      if (!isSkillTag(value)) {
+        throw new AppError(400, `Unknown tag "${value}". Accepted tags: ${SKILL_TAG_SLUGS.join(", ")}`);
+      }
+      tagFilter = value;
     }
-    const { status, client, freelancer, page, limit } = parsed.data;
 
     const jobs = await prisma.job.findMany({
       where: {
-        ...(status ? { status } : {}),
-        ...(client ? { client: { stellarAddress: client } } : {}),
-        ...(freelancer ? { freelancer: { stellarAddress: freelancer } } : {}),
+        ...(status ? { status: String(status) as JobStatus } : {}),
+        ...(client ? { client: { stellarAddress: String(client) } } : {}),
+        ...(freelancer ? { freelancer: { stellarAddress: String(freelancer) } } : {}),
+        // Postgres array containment: a job matches when its tags include this one.
+        ...(tagFilter ? { tags: { has: tagFilter } } : {}),
       },
       include: { milestones: true, client: true, freelancer: true },
       orderBy: { createdAt: "desc" },
@@ -56,10 +75,76 @@ jobsRouter.get("/", async (req, res, next) => {
   }
 });
 
+// GET /api/jobs/tags — the curated taxonomy, so a client can render the picker
+// and the filter without duplicating the list (issue #70).
+jobsRouter.get("/tags", (_req, res) => {
+  res.json(SKILL_TAGS);
+});
+
+// GET /api/jobs/saved — the caller's bookmarks, most recently saved first.
+//
+// Returns job rows (not bookmark rows) so the client can render them with the
+// same list component it uses for `GET /api/jobs` (issue #71).
+jobsRouter.get("/saved", requireAuth, async (_req, res, next) => {
+  try {
+    const saved = await prisma.savedJob.findMany({
+      where: { user: { stellarAddress: res.locals.stellarAddress } },
+      orderBy: { createdAt: "desc" },
+      include: { job: { include: { milestones: true, client: true, freelancer: true } } },
+    });
+    res.json(saved.map((entry) => entry.job));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/jobs/:id/save
+//
+// Idempotent: `upsert` on the (user, job) key, so a double click leaves one
+// bookmark rather than a 409 the UI has to interpret.
+jobsRouter.post("/:id/save", requireAuth, async (req, res, next) => {
+  try {
+    const job = await prisma.job.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!job) throw new AppError(404, "Job not found");
+
+    const user = await prisma.user.findUnique({
+      where: { stellarAddress: res.locals.stellarAddress },
+      select: { id: true },
+    });
+    if (!user) throw new AppError(404, "User not found — call /api/users/auth first");
+
+    const saved = await prisma.savedJob.upsert({
+      where: { userId_jobId: { userId: user.id, jobId: job.id } },
+      create: { userId: user.id, jobId: job.id },
+      update: {},
+    });
+    res.status(201).json(saved);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/jobs/:id/save — unsaving something that was never saved is a
+// no-op, not an error, so the toggle always settles.
+jobsRouter.delete("/:id/save", requireAuth, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { stellarAddress: res.locals.stellarAddress },
+      select: { id: true },
+    });
+    if (!user) throw new AppError(404, "User not found — call /api/users/auth first");
+
+    await prisma.savedJob.deleteMany({ where: { userId: user.id, jobId: req.params.id } });
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/jobs
 jobsRouter.post("/", requireAuth, validate(createJobSchema), async (req, res, next) => {
   try {
-    const { title, description, milestones, expiresAt, asset } = req.body as z.infer<
+    const { title, description, milestones, expiresAt, asset, tags } = req.body as z.infer<
       typeof createJobSchema
     >;
 
@@ -90,6 +175,7 @@ jobsRouter.post("/", requireAuth, validate(createJobSchema), async (req, res, ne
         title,
         description,
         asset: assetInfo.symbol,
+        tags,
         totalAmountUsdc,
         clientId: client.id,
         expiresAt: expiresAt ? new Date(expiresAt) : undefined,
@@ -131,7 +217,7 @@ jobsRouter.get("/:id", async (req, res, next) => {
 });
 
 // PUT /api/jobs/:id/assign
-jobsRouter.put("/:id/assign", requireAuth, async (req, res, next) => {
+jobsRouter.put("/:id/assign", requireAuth, validate(assignJobSchema), async (req, res, next) => {
   try {
     const job = await prisma.job.findUnique({ where: { id: req.params.id }, include: { client: true } });
     if (!job) throw new AppError(404, "Job not found");
@@ -139,7 +225,15 @@ jobsRouter.put("/:id/assign", requireAuth, async (req, res, next) => {
       throw new AppError(403, "Only the client can assign a freelancer");
     }
 
-    const { freelancerAddress } = req.body as { freelancerAddress: string };
+    if (job.freelancerId) {
+      throw new AppError(400, "Job is already assigned to a freelancer");
+    }
+
+    const { freelancerAddress } = req.body as z.infer<typeof assignJobSchema>;
+    if (job.client.stellarAddress === freelancerAddress) {
+      throw new AppError(400, "Client cannot be assigned as freelancer to their own job");
+    }
+
     const freelancer = await prisma.user.findUnique({ where: { stellarAddress: freelancerAddress } });
     if (!freelancer) throw new AppError(404, "Freelancer not found");
 
@@ -152,3 +246,4 @@ jobsRouter.put("/:id/assign", requireAuth, async (req, res, next) => {
     next(err);
   }
 });
+

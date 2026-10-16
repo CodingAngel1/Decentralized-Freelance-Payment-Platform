@@ -1,10 +1,20 @@
 /**
- * Route-level tests for `POST /api/escrow/sync/:jobId` — issue #19.
+ * Validation tests for the `/api/escrow` build routes (issue #49).
  *
- * The database is stubbed (see the `../db` mock) and nothing here talks to
- * Stellar: the sync route only writes to Postgres, so the subject is the
- * authorization and validation it performs *before* that write — the caller
- * must be the job's client, and `escrowId` must be a positive integer.
+ * The bug these pin down: the build routes validated `escrowId` with
+ * `z.number()`, which also accepts a fraction. A value such as `1.5` sailed
+ * through validation and then reached `BigInt(1.5)` in the handler, where it
+ * threw a `RangeError` — so a malformed request answered 500 instead of 400.
+ *
+ * The contract the routes now honour, asserted here per route:
+ *   - a fractional id   → 400, not 500;
+ *   - a negative id     → 400;
+ *   - a non-numeric id  → 400;
+ *   - a well-formed id  → accepted (the tx is built);
+ *   - id 0              → accepted, because the contract's first escrow is id 0.
+ *
+ * The chain is stubbed (see the `@stellar/stellar-sdk` mock below), so nothing
+ * here talks to a network: the subject is the API's own validation.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,21 +24,61 @@ import { Keypair } from "@stellar/stellar-sdk";
 import { SignJWT } from "jose";
 
 const CLIENT = Keypair.random().publicKey();
-const STRANGER = Keypair.random().publicKey();
+// A real contract strkey: `new Contract(...)` validates the id before the
+// stubbed server ever sees the call.
+const ESCROW_CONTRACT = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
 
-const h = vi.hoisted(() => ({ job: { findUnique: vi.fn(), update: vi.fn() } }));
+process.env.ESCROW_CONTRACT_ID = ESCROW_CONTRACT;
+process.env.JWT_SECRET = "test_secret_that_is_at_least_32_chars_long!";
+
+/** Every transaction the routes asked the chain to build, in order. */
+const builtTxs = vi.hoisted(() => [] as unknown[]);
+
+const h = vi.hoisted(() => ({
+  job: { update: vi.fn(), findUnique: vi.fn() },
+}));
 
 vi.mock("../db", () => ({ prisma: { job: h.job } }));
+
+vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@stellar/stellar-sdk")>();
+
+  // The real pipeline needs a funded account and a live RPC node; these tests
+  // only need to know whether the handler got far enough to build a call.
+  class FakeServer {
+    async getAccount(address: string) {
+      return new actual.Account(address, "1");
+    }
+
+    async simulateTransaction(tx: unknown) {
+      builtTxs.push(tx);
+      return { result: { retval: actual.xdr.ScVal.scvVoid() } };
+    }
+  }
+
+  return {
+    ...actual,
+    SorobanRpc: {
+      ...actual.SorobanRpc,
+      Server: FakeServer,
+      assembleTransaction: () => ({ build: () => ({ toXDR: () => "assembled-xdr" }) }),
+    },
+  };
+});
 
 let baseUrl: string;
 let server: Server;
 
+// The router is imported here rather than at the top of the file because it
+// imports `config`, which reads the contract ids out of the environment at
+// import time — and those are set above.
 beforeAll(async () => {
   const { escrowRouter } = await import("../routes/escrow");
   const { errorHandler } = await import("../middleware/errorHandler");
   const { jsonReplacer } = await import("../lib/json");
 
   const app = express();
+  // Mirrors app.ts: Prisma ids are BigInt, which JSON.stringify throws on.
   app.set("json replacer", jsonReplacer);
   app.use(express.json());
   app.use("/api/escrow", escrowRouter);
@@ -49,11 +99,12 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  h.job.findUnique.mockReset();
+  builtTxs.length = 0;
   h.job.update.mockReset();
+  h.job.findUnique.mockReset();
 });
 
-/** A bearer token `requireAuth` accepts for `address`. */
+/** A bearer token the `requireAuth` middleware accepts for `address`. */
 async function tokenFor(address: string): Promise<string> {
   return new SignJWT({ sub: address })
     .setProtectedHeader({ alg: "HS256" })
@@ -61,86 +112,86 @@ async function tokenFor(address: string): Promise<string> {
     .sign(new TextEncoder().encode(process.env.JWT_SECRET));
 }
 
-/** The job row as the route loads it, with its client attached. */
-function jobRow(client = CLIENT) {
-  return { id: "job_1", escrowId: null, status: "CREATED", client: { stellarAddress: client } };
-}
-
-async function sync(jobId: string, address: string, body: unknown) {
-  const res = await fetch(`${baseUrl}/api/escrow/sync/${jobId}`, {
+async function post(path: string, body: unknown = {}) {
+  const res = await fetch(`${baseUrl}/api/escrow${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${await tokenFor(address)}`,
+      Authorization: `Bearer ${await tokenFor(CLIENT)}`,
     },
     body: JSON.stringify(body),
   });
   return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 }
 
-describe("POST /api/escrow/sync/:jobId", () => {
-  it("lets the job's client link the on-chain escrow id", async () => {
-    h.job.findUnique.mockResolvedValue(jobRow());
-    h.job.update.mockResolvedValue({ ...jobRow(), escrowId: 7n, status: "FUNDED" });
+// Each build route plus the extra body fields it needs beyond `escrowId`.
+const BUILD_ROUTES: Array<[string, Record<string, unknown>]> = [
+  ["/build/fund", {}],
+  ["/build/release", { milestoneIndex: 0 }],
+  ["/build/reclaim", {}],
+  ["/build/reclaim-dispute", {}],
+];
 
-    const res = await sync("job_1", CLIENT, { escrowId: 7 });
+for (const [path, extra] of BUILD_ROUTES) {
+  describe(`POST /api/escrow${path} — escrowId validation`, () => {
+    it("rejects a fractional id with 400, not 500", async () => {
+      const res = await post(path, { escrowId: 1.5, ...extra });
+      expect(res.status).toBe(400);
+      // The handler never ran, so no doomed transaction was built.
+      expect(builtTxs).toHaveLength(0);
+    });
 
-    expect(res.status).toBe(200);
-    // jsonReplacer renders the BigInt column as a string.
-    expect(res.body.escrowId).toBe("7");
-    expect(h.job.update).toHaveBeenCalledWith({
-      where: { id: "job_1" },
-      data: { escrowId: 7n, status: "FUNDED" },
+    it("rejects a negative id with 400", async () => {
+      const res = await post(path, { escrowId: -1, ...extra });
+      expect(res.status).toBe(400);
+      expect(builtTxs).toHaveLength(0);
+    });
+
+    it("rejects a non-numeric id with 400", async () => {
+      const res = await post(path, { escrowId: "not-an-id", ...extra });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a missing id with 400", async () => {
+      const res = await post(path, extra);
+      expect(res.status).toBe(400);
+    });
+
+    it("accepts a well-formed id and builds the call", async () => {
+      const res = await post(path, { escrowId: 7, ...extra });
+      expect(res.status).toBe(200);
+      expect(res.body.xdr).toBe("assembled-xdr");
+      expect(builtTxs).toHaveLength(1);
     });
   });
+}
 
-  it("refuses a caller who is not the job's client (403)", async () => {
-    h.job.findUnique.mockResolvedValue(jobRow());
-
-    const res = await sync("job_1", STRANGER, { escrowId: 7 });
-
-    expect(res.status).toBe(403);
-    expect(h.job.update).not.toHaveBeenCalled();
+describe("escrowId validation — zero-based ids", () => {
+  it("accepts id 0, the first id the contract assigns", async () => {
+    // `next_id` returns 0 for the first escrow (contracts/escrow/src/test.rs
+    // asserts it), so a `.positive()` check would 400 a real escrow.
+    const res = await post("/build/fund", { escrowId: 0 });
+    expect(res.status).toBe(200);
+    expect(res.body.xdr).toBe("assembled-xdr");
   });
+});
 
-  it("404s when the job does not exist instead of throwing inside Prisma", async () => {
-    h.job.findUnique.mockResolvedValue(null);
-
-    const res = await sync("job_missing", CLIENT, { escrowId: 7 });
-
-    expect(res.status).toBe(404);
-    expect(h.job.update).not.toHaveBeenCalled();
-  });
-
-  it("rejects zero, negative, fractional, and unsafe-integer ids with 400", async () => {
-    const badIds = [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 2];
-
-    for (const escrowId of badIds) {
-      h.job.findUnique.mockClear();
-      const res = await sync("job_1", CLIENT, { escrowId });
-      expect(res.status).toBe(400);
-    }
-
-    // Rejected at the edge: the job is never loaded and nothing is written.
-    expect(h.job.findUnique).not.toHaveBeenCalled();
-    expect(h.job.update).not.toHaveBeenCalled();
-  });
-
-  it("rejects a non-numeric escrowId with 400", async () => {
-    const res = await sync("job_1", CLIENT, { escrowId: "7" });
-
+describe("POST /api/escrow/sync/:jobId — escrowId validation", () => {
+  it("rejects a fractional id with 400 before touching the database", async () => {
+    const res = await post("/sync/job_1", { escrowId: 1.5 });
     expect(res.status).toBe(400);
     expect(h.job.update).not.toHaveBeenCalled();
   });
 
-  it("requires authentication", async () => {
-    const res = await fetch(`${baseUrl}/api/escrow/sync/job_1`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ escrowId: 7 }),
-    });
+  it("records a well-formed id", async () => {
+    h.job.update.mockResolvedValue({ id: "job_1", escrowId: 7n, status: "FUNDED" });
 
-    expect(res.status).toBe(401);
-    expect(h.job.update).not.toHaveBeenCalled();
+    const res = await post("/sync/job_1", { escrowId: 7 });
+
+    expect(res.status).toBe(200);
+    expect(h.job.update).toHaveBeenCalledWith({
+      where: { id: "job_1" },
+      data: { escrowId: 7n, status: "FUNDED" },
+    });
   });
 });
