@@ -6,7 +6,9 @@
  * Routes:
  *   /              → Dashboard (connect wallet, open a job by id)
  *   /post          → PostJob (client creates + funds a new escrow)
+ *   /activity      → Activity (earnings + open escrows for the wallet, #73)
  *   /jobs/:id      → JobDetail (milestone tracker, release + dispute)
+ *   /jobs/:id/receipt → Receipt (printable/exportable record)
  *   /profile/:addr → Profile (reputation score)
  */
 
@@ -16,11 +18,14 @@ import { ToastProvider } from "./hooks/ToastProvider";
 import { useWallet } from "./hooks/wallet-context";
 import { useUnread } from "./hooks/useUnread";
 import AddressField from "./components/AddressField";
-import Toaster from "./components/Toaster";
+import NotificationsBell from "./components/NotificationsBell";
 import Dashboard from "./pages/Dashboard";
+import Activity from "./pages/Activity";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
+import Receipt from "./pages/Receipt";
 import Profile from "./pages/Profile";
+import FreelancerDirectory from "./pages/FreelancerDirectory";
 
 function Nav() {
   const { publicKey, connecting, connect, disconnect } = useWallet();
@@ -30,15 +35,12 @@ function Nav() {
   return (
     <nav className="nav">
       <Link to="/">My Jobs</Link>
+      <Link to="/activity">Activity</Link>
       <Link to="/post">Post a Job</Link>
-      {publicKey && unread > 0 && (
-        <span className="nav-badge" role="status">
-          {unread} unread message{unread === 1 ? "" : "s"}
-        </span>
-      )}
-      <span className="nav-spacer">
+      <span className="nav-spacer" style={{ display: "inline-flex", alignItems: "center" }}>
         {publicKey ? (
           <>
+            <NotificationsBell />
             <AddressField address={publicKey} truncate />{" "}
             <button onClick={disconnect}>Disconnect</button>
           </>
@@ -55,20 +57,18 @@ function Nav() {
 export default function App() {
   return (
     <WalletProvider>
-      <ToastProvider>
-        <BrowserRouter>
-          <Nav />
-          {/* One toaster for every route: transaction feedback must survive
-              navigation, which the inline-only messages did not (issue #60). */}
-          <Toaster />
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/post" element={<PostJob />} />
-            <Route path="/jobs/:id" element={<JobDetail />} />
-            <Route path="/profile/:address" element={<Profile />} />
-          </Routes>
-        </BrowserRouter>
-      </ToastProvider>
+      <BrowserRouter>
+        <Nav />
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/freelancers" element={<FreelancerDirectory />} />
+          <Route path="/post" element={<PostJob />} />
+          <Route path="/activity" element={<Activity />} />
+          <Route path="/jobs/:id" element={<JobDetail />} />
+          <Route path="/jobs/:id/receipt" element={<Receipt />} />
+          <Route path="/profile/:address" element={<Profile />} />
+        </Routes>
+      </BrowserRouter>
     </WalletProvider>
   );
 }

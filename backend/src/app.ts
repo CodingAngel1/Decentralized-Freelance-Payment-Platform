@@ -9,23 +9,19 @@ import { docsEnabled, openApiDocument } from "./openapi";
 import { isAllowedOrigin, parseList } from "./lib/access";
 import { jsonReplacer } from "./lib/json";
 import { errorHandler } from "./middleware/errorHandler";
+import { notFoundHandler } from "./middleware/notFound";
 import { usersRouter } from "./routes/users";
 import { jobsRouter } from "./routes/jobs";
 import { escrowRouter } from "./routes/escrow";
 import { disputesRouter } from "./routes/disputes";
 import { reputationRouter } from "./routes/reputation";
-import { messagesRouter } from "./routes/messages";
+import { notificationsRouter } from "./routes/notifications";
 
 export function createApp() {
   const app = express();
 
-  // OpenAPI description + explorer (issue #61). Mounted ahead of helmet because
-  // the bundled Swagger UI bootstraps itself with an inline script, which
-  // helmet's default Content-Security-Policy would block. The routes are only
-  // registered outside production, so a deployed instance exposes neither.
-  if (docsEnabled) {
-    app.get("/api/docs/openapi.json", (_req, res) => res.json(openApiDocument));
-    app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(openApiDocument));
+  if (config.TRUST_PROXY > 0) {
+    app.set("trust proxy", config.TRUST_PROXY);
   }
 
   app.use(helmet());
@@ -62,7 +58,11 @@ export function createApp() {
   app.use("/api/escrow", escrowRouter);
   app.use("/api/disputes", disputesRouter);
   app.use("/api/reputation", reputationRouter);
-  app.use("/api/messages", messagesRouter);
+  app.use("/api/notifications", notificationsRouter);
+
+  // Unmatched paths fall through to Express's built-in final handler, which
+  // answers HTML — unlike every route above. Answer them as JSON instead.
+  app.use(notFoundHandler);
 
   app.use(errorHandler);
 

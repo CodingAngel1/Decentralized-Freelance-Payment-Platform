@@ -12,6 +12,7 @@
  * POST /api/escrow/build/reclaim-dispute   — build escrow.reclaim_after_dispute_timeout() tx
  * POST /api/escrow/build/update-milestones — build escrow.update_milestones() tx
  * PUT  /api/escrow/:escrowId/milestones    — record a confirmed milestone edit
+ * GET  /api/escrow/:escrowId/receipt       — printable receipt for one escrow
  * POST /api/escrow/sync/:jobId             — sync on-chain escrow ID to DB job record
  */
 
@@ -23,6 +24,7 @@ import {
   SorobanRpc,
   TransactionBuilder,
   BASE_FEE,
+  xdr,
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
 import { buildCreateArgs, buildUpdateMilestonesArgs } from "../lib/escrowArgs";
@@ -33,6 +35,7 @@ import {
   buildReleaseMilestoneArgs,
 } from "../lib/scval";
 import { formatAmount, getAsset, sumAmounts, toBaseUnits, UnknownAssetError } from "../lib/assets";
+import { buildEscrowReceipt } from "../lib/receipt";
 import { friendlyContractError } from "../lib/contractErrors";
 import { isValidStellarAddress } from "../lib/stellarAddress";
 import { prisma } from "../db";
@@ -45,6 +48,21 @@ export const escrowRouter = Router();
 const server = new SorobanRpc.Server(config.SOROBAN_RPC_URL);
 const networkPassphrase =
   config.STELLAR_NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
+
+/**
+ * An on-chain escrow id: the `u64` the escrow contract assigns in `next_id`,
+ * which is zero-based (the first escrow is id 0 — see
+ * `contracts/escrow/src/test.rs`).
+ *
+ * `z.number()` on its own also accepts `1.5`, which then reaches `BigInt(...)`
+ * and throws a `RangeError` that the error handler reports as a 500. `.int()`
+ * rejects a fraction and `.nonnegative()` rejects a negative id, so a malformed
+ * id fails validation as a 400 instead of an internal error (issue #49).
+ *
+ * `.positive()` is deliberately not used: escrow ids start at 0, so requiring a
+ * strictly positive id would 400 the first escrow the contract ever creates.
+ */
+const escrowIdSchema = z.number().int().nonnegative();
 
 async function buildTx(sourceAddress: string, operation: any): Promise<string> {
   const account = await server.getAccount(sourceAddress);
@@ -149,8 +167,8 @@ export const editableMilestoneSchema = z.object({
 // while the escrow is still unfunded. The route takes whole-unit amounts and
 // encodes them exactly like `build/create`, so both paths produce identical
 // arguments for the same edit.
-export const updateMilestonesSchema = z.object({
-  escrowId: z.number().int().nonnegative(),
+const updateMilestonesSchema = z.object({
+  escrowId: escrowIdSchema,
   milestones: z.array(editableMilestoneSchema).min(1),
 });
 
@@ -249,8 +267,42 @@ escrowRouter.put(
   },
 );
 
+// GET /api/escrow/:escrowId/receipt
+//
+// The artifact a client keeps for their records (issue #77): the off-chain job
+// with its milestones, its releases, and the indexed events so every step that
+// happened on-chain carries a transaction the client can look up.
+//
+// Built from indexed state rather than a chain read, so it needs no wallet and
+// no simulation — it is a receipt of what the platform knows, not a view call.
+// The amounts are rendered in whole units of the job's asset, exactly as the
+// job list already reports them.
+escrowRouter.get("/:escrowId/receipt", async (req, res, next) => {
+  try {
+    const escrowIdText = req.params.escrowId;
+    if (!/^\d+$/.test(escrowIdText)) throw new AppError(400, "Invalid escrow id");
+    const escrowId = BigInt(escrowIdText);
+
+    const job = await prisma.job.findUnique({
+      where: { escrowId },
+      include: {
+        milestones: { orderBy: { index: "asc" } },
+        client: { select: { stellarAddress: true, displayName: true } },
+        freelancer: { select: { stellarAddress: true, displayName: true } },
+      },
+    });
+    if (!job) throw new AppError(404, "No job record for that escrow id");
+
+    const events = await prisma.chainEvent.findMany({ where: { escrowId } });
+
+    res.json(buildEscrowReceipt(escrowId, job, events));
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/escrow/build/fund
-escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: z.number() })), async (req, res, next) => {
+escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: escrowIdSchema })), async (req, res, next) => {
   try {
     const contract = new Contract(config.ESCROW_CONTRACT_ID);
     const xdr = await buildTx(
@@ -264,7 +316,7 @@ escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: z.nu
 });
 
 // POST /api/escrow/build/release
-export const releaseSchema = z.object({ escrowId: z.number(), milestoneIndex: z.number().int().min(0) });
+const releaseSchema = z.object({ escrowId: escrowIdSchema, milestoneIndex: z.number().int().min(0) });
 
 escrowRouter.post("/build/release", requireAuth, validate(releaseSchema), async (req, res, next) => {
   try {
@@ -284,7 +336,7 @@ escrowRouter.post("/build/release", requireAuth, validate(releaseSchema), async 
 });
 
 // POST /api/escrow/build/reclaim
-escrowRouter.post("/build/reclaim", requireAuth, validate(z.object({ escrowId: z.number() })), async (req, res, next) => {
+escrowRouter.post("/build/reclaim", requireAuth, validate(z.object({ escrowId: escrowIdSchema })), async (req, res, next) => {
   try {
     const contract = new Contract(config.ESCROW_CONTRACT_ID);
     const xdr = await buildTx(
@@ -308,7 +360,7 @@ escrowRouter.post("/build/reclaim", requireAuth, validate(z.object({ escrowId: z
 escrowRouter.post(
   "/build/reclaim-dispute",
   requireAuth,
-  validate(z.object({ escrowId: z.number() })),
+  validate(z.object({ escrowId: escrowIdSchema })),
   async (req, res, next) => {
     try {
       const contract = new Contract(config.ESCROW_CONTRACT_ID);
@@ -327,7 +379,7 @@ escrowRouter.post(
 );
 
 // POST /api/escrow/sync/:jobId — called by frontend after tx confirmed
-export const syncSchema = z.object({ escrowId: z.number() });
+const syncSchema = z.object({ escrowId: escrowIdSchema });
 
 escrowRouter.post("/sync/:jobId", requireAuth, validate(syncSchema), async (req, res, next) => {
   try {

@@ -238,6 +238,19 @@ fieldset {
   border-color: #cbd5e1;
 }
 
+/* Milestone due-date reminders (issue #74) — a deadline, not an escrow state. */
+.badge-overdue {
+  background: #fdecea;
+  color: #b42318;
+  border-color: #f4c7c3;
+}
+
+.badge-due-soon {
+  background: #fdf5e6;
+  color: #92610a;
+  border-color: #f0dca8;
+}
+
 /* --- Jobs list ---------------------------------------------------------- */
 
 .job-list {
@@ -276,52 +289,83 @@ fieldset {
   display: block;
 }
 
-/* --- Unread badge ------------------------------------------------------- */
+/* --- Saved jobs --------------------------------------------------------- */
 
-.nav-badge {
-  padding: 0.1rem 0.55rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  font-weight: 600;
+/* The bookmark toggle sits at the end of a job row, so it stays small. */
+.btn-save,
+.btn-saved {
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.btn-saved {
   background: #e6f0fd;
+  border-color: #bcd4f6;
   color: #1d4ed8;
-  border: 1px solid #bcd4f6;
 }
 
-/* --- Conversation ------------------------------------------------------- */
+/* --- Skill tags --------------------------------------------------------- */
 
-.conversation {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
+.tag {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #eef2f6;
+  color: #475569;
+  border: 1px solid #cbd5e1;
 }
 
-.message-list {
-  list-style: none;
-  margin: 0 0 1rem;
-  padding: 0;
+.tag-group {
+  margin-bottom: 0.5rem;
+}
+
+/* Inline so a category's tags wrap instead of stacking one per line. */
+.tag-option {
+  display: inline-block;
+  margin-right: 0.75rem;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+/* --- Activity summary --------------------------------------------------- */
+
+/* Three counters side by side; wraps to one per line on a narrow screen. */
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.stat {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  flex: 1 1 8rem;
 }
 
-/* The job page is narrow, so a bubble is capped rather than full width. */
-.message {
-  max-width: 85%;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
+.stat-value {
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
-.message p {
-  margin: 0.25rem 0 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+/* One released/locked total per asset, kept on a single line each. */
+.amount {
+  display: inline-block;
+  margin-right: 0.75rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.message-mine {
-  align-self: flex-end;
-  background: #eef4ff;
-  border-color: #bcd4f6;
+/* --- Fiat estimates (issue #76) ----------------------------------------- */
+
+/* Sits beside an amount without competing with it: smaller, muted, never bold. */
+.fiat {
+  font-size: 0.85em;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }

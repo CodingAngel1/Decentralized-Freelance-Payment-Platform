@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MAX_JOB_TAGS, SKILL_TAGS } from "../lib/tags";
 
 // Hoisted so the vi.mock factories below can reference them.
 const h = vi.hoisted(() => ({
@@ -28,6 +29,11 @@ vi.mock("react-router-dom", () => ({
 }));
 
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
+// Fiat estimates (#76) read an external price feed; no rate in these tests.
+vi.mock("../lib/prices", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/prices")>()),
+  getFiatRates: async () => ({}),
+}));
 vi.mock("../hooks/useEscrow", () => ({ useEscrow: () => h.escrow }));
 // Only the addresses/explorer helpers are used here; skip loading the SDK.
 vi.mock("../lib/stellar", () => ({
@@ -113,93 +119,55 @@ async function renderTotal(amounts: string[]): Promise<string> {
   return screen.getByText(/^Total:/).textContent ?? "";
 }
 
-describe("PostJob templates", () => {
-  beforeEach(() => {
-    // The template store is browser storage; each test starts with none.
-    window.localStorage.clear();
+describe("PostJob skills", () => {
+  it("sends the chosen skill tags with the job it creates", async () => {
+    h.escrow.createAndFund.mockResolvedValue({ id: 1n, hash: "HASH" });
+    h.api.createJob.mockResolvedValue({ id: "job-1" });
+
+    await renderWithEnv({ VITE_XLM_CONTRACT_ID: "CXLM" });
+    fireEvent.change(screen.getByLabelText(/Title/), { target: { value: "Landing page" } });
+    fireEvent.change(screen.getByLabelText(/Description/), {
+      target: { value: "A longer description of the work" },
+    });
+    fireEvent.change(screen.getByLabelText(/Freelancer Stellar address/), {
+      target: { value: "GFREELANCER" },
+    });
+    fireEvent.change(screen.getByLabelText(/Amount #1/), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByLabelText(/Web development/));
+    fireEvent.click(screen.getByLabelText(/Smart contracts/));
+
+    fireEvent.click(screen.getByRole("button", { name: /Create & Fund Escrow/ }));
+
+    await waitFor(() => expect(h.api.createJob).toHaveBeenCalled());
+    expect(h.api.createJob.mock.calls[0][0].tags).toEqual([
+      "web-development",
+      "smart-contracts",
+    ]);
   });
 
-  afterEach(() => {
-    window.localStorage.clear();
+  it("caps the selection at the limit the API enforces", async () => {
+    await renderWithEnv({});
+
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes).toHaveLength(SKILL_TAGS.length);
+
+    for (const box of boxes.slice(0, MAX_JOB_TAGS)) fireEvent.click(box);
+
+    expect(screen.getByText(`Skills (${MAX_JOB_TAGS}/${MAX_JOB_TAGS})`)).toBeTruthy();
+    // The remaining boxes lock, so the API can never reject the selection.
+    expect(boxes[MAX_JOB_TAGS].disabled).toBe(true);
   });
 
-  /** Fill the milestone rows with the given amounts, adding rows as needed. */
-  function fillAmounts(amounts: string[]): void {
-    for (let i = 1; i < amounts.length; i++) {
-      fireEvent.click(screen.getByRole("button", { name: "Add milestone" }));
-    }
-    amounts.forEach((amount, i) => {
-      fireEvent.change(screen.getByLabelText(new RegExp(`Amount #${i + 1}`)), {
-        target: { value: amount },
-      });
-    });
-  }
-
-  it("saves the current milestone set and re-applies it later", async () => {
-    await renderWithEnv({});
-    fillAmounts(["1.5", "2.5"]);
-
-    fireEvent.change(screen.getByLabelText(/Save these milestones as/i), {
-      target: { value: "Retainer" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save template" }));
-
-    // The template is offered in the picker from now on.
-    expect(screen.getByRole("option", { name: /Retainer/ })).toBeTruthy();
-
-    // Change the rows, then restore the saved set.
-    fireEvent.change(screen.getByLabelText(/Amount #1/), { target: { value: "9" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply template" }));
-
-    expect((screen.getByLabelText(/Amount #1/) as HTMLInputElement).value).toBe("1.5");
-    expect((screen.getByLabelText(/Amount #2/) as HTMLInputElement).value).toBe("2.5");
-  });
-
-  it("will not save a template before it has a name and an amount", async () => {
+  it("unchecks a tag when it is clicked twice", async () => {
     await renderWithEnv({});
 
-    const save = screen.getByRole("button", { name: "Save template" }) as HTMLButtonElement;
-    // No name, no amount.
-    expect(save.disabled).toBe(true);
+    const box = screen.getByLabelText(/Web development/) as HTMLInputElement;
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
 
-    fillAmounts(["1"]);
-    // Still nameless.
-    expect(save.disabled).toBe(true);
-
-    fireEvent.change(screen.getByLabelText(/Save these milestones as/i), {
-      target: { value: "Retainer" },
-    });
-    expect(save.disabled).toBe(false);
-  });
-
-  it("keeps one wallet's templates out of another's form", async () => {
-    h.wallet.publicKey = "GCLIENT";
-    await renderWithEnv({});
-    fillAmounts(["1"]);
-    fireEvent.change(screen.getByLabelText(/Save these milestones as/i), {
-      target: { value: "Retainer" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save template" }));
-    expect(screen.getByRole("option", { name: /Retainer/ })).toBeTruthy();
-
-    cleanup();
-    h.wallet.publicKey = "GOTHER";
-    await renderWithEnv({});
-
-    expect(screen.getByText("No saved templates yet.")).toBeTruthy();
-  });
-
-  it("deletes a saved template", async () => {
-    await renderWithEnv({});
-    fillAmounts(["1"]);
-    fireEvent.change(screen.getByLabelText(/Save these milestones as/i), {
-      target: { value: "Retainer" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save template" }));
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-
-    expect(screen.getByText("No saved templates yet.")).toBeTruthy();
+    fireEvent.click(box);
+    expect(box.checked).toBe(false);
+    expect(screen.getByText(`Skills (0/${MAX_JOB_TAGS})`)).toBeTruthy();
   });
 });
 

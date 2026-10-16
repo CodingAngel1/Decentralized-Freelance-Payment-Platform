@@ -42,6 +42,7 @@ import {
   SorobanRpc,
   TransactionBuilder,
   BASE_FEE,
+  xdr,
 } from "@stellar/stellar-sdk";
 import type { Dispute, Job, User } from "@prisma/client";
 import { config } from "../config";
@@ -72,7 +73,7 @@ const networkPassphrase =
  */
 async function buildTx(
   sourceAddress: string,
-  operation: any,
+  operation: xdr.Operation,
   messages: Record<number, string>,
 ): Promise<string> {
   const account = await server.getAccount(sourceAddress);
