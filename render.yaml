@@ -29,10 +29,11 @@ services:
     runtime: docker
     plan: free
     region: oregon
-    # The Dockerfile lives in backend/, so both the path and the build context
-    # have to point there.
+    # The build context is the repository root: the Dockerfile copies in
+    # deployments/testnet.json (the committed deploy record) so the API can warn
+    # at startup when its env vars point at superseded contracts (issue #91).
     dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
+    dockerContext: .
     healthCheckPath: /health
     # Deploys are deliberate: `git push` should not roll production forward on
     # its own. Switch to `checksPass` to deploy automatically once this repo's
@@ -59,21 +60,32 @@ services:
       - key: SOROBAN_RPC_URL
         value: https://soroban-testnet.stellar.org
 
-      # Deployed contract ids — keep in step with deployments/testnet.json.
-      # Without them the indexer logs "No contract IDs configured" and does nothing.
+      # Deployed contract ids — DELIBERATELY NOT committed (issue #91).
+      #
+      # They change on every `scripts/deploy_testnet.sh` run, which writes them
+      # to deployments/testnet.json and backend/.env.contracts and prints the
+      # exact values to set. A committed copy goes stale the moment the contracts
+      # are redeployed, and a stale backend silently indexes the superseded
+      # contracts. `sync: false` makes Render prompt for (and keep) these in the
+      # dashboard: set them from the script's output and redeploy after each
+      # contract deploy. The API also warns at startup when its configured ids no
+      # longer match deployments/testnet.json.
       - key: ESCROW_CONTRACT_ID
-        value: CALNRFGMUI7MLNLWO445U2BSDENF6DENURHXXFFRT6PV5GSOQX7GZGP7
+        sync: false
       - key: DISPUTE_CONTRACT_ID
-        value: CB24TF5GPP7EA6VWK4KZWBHHSY6FWNV3DKOGSZSDK347EODGGNPN7IMF
+        sync: false
       - key: REPUTATION_CONTRACT_ID
-        value: CA5GXR4LVH5DYGB2RZDFAM3VNJW6LQ5EKUKURSLZBJGAH7LFJAOHKSET
+        sync: false
 
+      # The testnet XLM SAC is stable across contract deploys, so it is safe to
+      # commit.
       - key: XLM_CONTRACT_ID
         value: CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
 
-      # Dispute panel. Empty would fail the resolve route closed.
+      # Dispute panel. It tracks the deployer/admin, so set it alongside the
+      # contract ids above; empty would fail the resolve route closed.
       - key: ARBITRATOR_ADDRESSES
-        value: GBPLJHDI6RPLS4EEJJTM7EVEV3UNTXLFAACWA63QSTHGLWH5RO3LQ75B
+        sync: false
 
       # The deployed frontend. Leaving this out allows every origin.
       - key: CORS_ORIGIN

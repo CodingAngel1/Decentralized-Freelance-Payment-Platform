@@ -38,8 +38,10 @@ services:
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      # Repo root: backend/Dockerfile copies deployments/testnet.json so the API
+      # can detect stale contract ids at startup (issue #91).
+      context: .
+      dockerfile: ./backend/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:

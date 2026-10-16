@@ -2,9 +2,12 @@ FROM node:20-alpine AS builder
 # Prisma needs OpenSSL present so it selects the matching engine binary.
 RUN apk add --no-cache openssl
 WORKDIR /app
-COPY package.json package-lock.json ./
+# The build context is the repository root (see render.yaml / docker-compose.yml),
+# so package files come from backend/ while deployments/ stays reachable for the
+# final stage below.
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
-COPY . .
+COPY backend/ .
 RUN npx prisma generate
 RUN npm run build
 
@@ -15,7 +18,11 @@ WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
-COPY package.json ./
+COPY backend/package.json ./
+# The committed deploy record, so the API can compare its configured contract
+# ids against the latest deploy at startup and warn when they are stale (issue
+# #91). Copied from the context root, not the builder image.
+COPY deployments ./deployments
 
 # Drop root (CIS 4.1): the base image ships an unprivileged `node` user
 # (uid 1000) that is never used otherwise. Nothing in this image is written at

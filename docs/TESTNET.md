@@ -18,8 +18,10 @@ are testnet-only deployments; never send real funds to them.
   real USDC SAC.
 
 > These ids are from the most recent deploy and are replaced whenever the
-> contracts change. `scripts/deploy_testnet.sh` rewrites `deployments/testnet.json`
-> and `frontend/.env` for you, so re-run it instead of hand-editing either file.
+> contracts change. `scripts/deploy_testnet.sh` rewrites `deployments/testnet.json`,
+> `frontend/.env` and `backend/.env.contracts`, and prints the values for the
+> deployed backend, so re-run it instead of hand-editing any of them. The API
+> warns at startup when its configured ids no longer match the record (issue #91).
 - The machine-readable record lives in [`../deployments/testnet.json`](../deployments/testnet.json).
 
 ## Reproduce the deployment
@@ -32,7 +34,7 @@ rustup target add wasm32v1-none
 stellar keys generate deployer --network testnet --fund
 
 # Builds, deploys, initializes all three contracts, and writes
-# deployments/testnet.json + frontend/.env
+# deployments/testnet.json + frontend/.env + backend/.env.contracts
 scripts/deploy_testnet.sh
 ```
 
