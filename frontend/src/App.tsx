@@ -19,12 +19,14 @@ import Dashboard from "./pages/Dashboard";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
 import Profile from "./pages/Profile";
+import FreelancerDirectory from "./pages/FreelancerDirectory";
 
 function Nav() {
   const { publicKey, connecting, connect, disconnect } = useWallet();
   return (
     <nav className="nav">
       <Link to="/">My Jobs</Link>
+      <Link to="/freelancers">Freelancers</Link>
       <Link to="/post">Post a Job</Link>
       <span className="nav-spacer" style={{ display: "inline-flex", alignItems: "center" }}>
         {publicKey ? (
@@ -50,6 +52,7 @@ export default function App() {
         <Nav />
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/freelancers" element={<FreelancerDirectory />} />
           <Route path="/post" element={<PostJob />} />
           <Route path="/jobs/:id" element={<JobDetail />} />
           <Route path="/profile/:address" element={<Profile />} />

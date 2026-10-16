@@ -165,7 +165,8 @@ export default function Dashboard() {
       )}
 
       <p>
-        <Link to="/post">Post a new job →</Link>
+        <Link to="/post">Post a new job →</Link> ·{" "}
+        <Link to="/freelancers">Browse freelancers directory →</Link>
       </p>
     </Layout>
   );
