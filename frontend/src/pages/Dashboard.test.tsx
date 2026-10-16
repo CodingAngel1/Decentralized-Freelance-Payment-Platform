@@ -21,6 +21,11 @@ const h = vi.hoisted(() => ({
     disconnect: vi.fn(),
   },
   fetchJobs: vi.fn(),
+  // The bookmark list is authenticated and loaded when a wallet connects (#71).
+  authenticate: vi.fn(async () => "jwt-1"),
+  fetchSavedJobs: vi.fn(async () => [] as unknown[]),
+  saveJob: vi.fn(async () => undefined),
+  unsaveJob: vi.fn(async () => undefined),
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -30,7 +35,13 @@ vi.mock("react-router-dom", () => ({
   ),
 }));
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
-vi.mock("../lib/api", () => ({ fetchJobs: h.fetchJobs }));
+vi.mock("../lib/api", () => ({
+  fetchJobs: h.fetchJobs,
+  authenticate: h.authenticate,
+  fetchSavedJobs: h.fetchSavedJobs,
+  saveJob: h.saveJob,
+  unsaveJob: h.unsaveJob,
+}));
 
 import Dashboard from "./Dashboard";
 import type { JobApi } from "../lib/api";
@@ -61,6 +72,10 @@ beforeEach(() => {
   h.navigate.mockClear();
   h.fetchJobs.mockReset();
   h.fetchJobs.mockResolvedValue([]);
+  h.fetchSavedJobs.mockReset();
+  h.fetchSavedJobs.mockResolvedValue([]);
+  h.saveJob.mockClear();
+  h.unsaveJob.mockClear();
   h.wallet.publicKey = null;
   h.wallet.connecting = false;
   h.wallet.error = null;
@@ -154,6 +169,88 @@ describe("Dashboard job list", () => {
     render(<Dashboard />);
 
     expect(await screen.findByText("Landing page redesign")).toBeTruthy();
+  });
+
+  it("bookmarks a job and reflects it on the button", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(h.saveJob).toHaveBeenCalledWith("job-1", "jwt-1"));
+    // The same row now offers to unsave it.
+    expect(await screen.findByRole("button", { name: "Saved" })).toBeTruthy();
+    expect(h.unsaveJob).not.toHaveBeenCalled();
+  });
+
+  it("unbookmarks a job that is already saved", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    h.fetchSavedJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    const saved = await screen.findByRole("button", { name: "Saved" });
+    fireEvent.click(saved);
+
+    await waitFor(() => expect(h.unsaveJob).toHaveBeenCalledWith("job-1", "jwt-1"));
+    expect(await screen.findByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
+  it("lists only the saved jobs when Saved only is on", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    h.fetchSavedJobs.mockResolvedValue([
+      job({ id: "job-9", title: "Bookmarked job", escrowId: 9 }),
+    ]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.click(screen.getByLabelText(/Saved only/));
+
+    // The bookmark list replaces the paginated one rather than merging with it.
+    expect(await screen.findByText("Bookmarked job")).toBeTruthy();
+    expect(screen.queryByText("Landing page redesign")).toBeNull();
+  });
+
+  it("shows an empty state for a wallet with no bookmarks", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.click(screen.getByLabelText(/Saved only/));
+
+    expect(await screen.findByText("No saved jobs yet.")).toBeTruthy();
+  });
+
+  it("reports a failed bookmark action instead of faking it", async () => {
+    h.wallet.publicKey = CLIENT;
+    h.fetchJobs.mockResolvedValue([job()]);
+    h.saveJob.mockRejectedValue(new Error("Could not save the job (HTTP 500)"));
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Could not save the job (HTTP 500)",
+    );
+    // The toggle did not half-apply.
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
+  it("offers no bookmark control to a visitor with no wallet", async () => {
+    h.fetchJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    expect(screen.queryByRole("button", { name: /Save/ })).toBeNull();
+    expect(screen.queryByLabelText(/Saved only/)).toBeNull();
+    // Nothing authenticated is fetched until a wallet exists.
+    expect(h.fetchSavedJobs).not.toHaveBeenCalled();
   });
 
   it("shows an empty state rather than a blank list", async () => {

@@ -172,6 +172,9 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `PUT` | `/api/users/me` | ✅ | Update your own profile |
 | `GET` | `/api/jobs` | — | List jobs with status + `tag` filters and pagination |
 | `GET` | `/api/jobs/tags` | — | The curated skill-tag taxonomy |
+| `GET` | `/api/jobs/saved` | ✅ | The caller's bookmarked jobs, newest first |
+| `POST` | `/api/jobs/:id/save` | ✅ | Bookmark a job (idempotent) |
+| `DELETE` | `/api/jobs/:id/save` | ✅ | Remove a bookmark |
 | `POST` | `/api/jobs` | ✅ | Create the off-chain job record |
 | `GET` | `/api/jobs/:id` | — | Job detail with milestones |
 | `PUT` | `/api/jobs/:id/assign` | ✅ | Assign a freelancer |
@@ -212,10 +215,14 @@ React + TypeScript + Vite, with Freighter for signing.
 
 | Route | Page | Purpose |
 |-------|------|---------|
-| `/` | `Dashboard` | Filterable by status and skill tag, paginated job list from the API |
+| `/` | `Dashboard` | Filterable by status and skill tag, paginated job list, plus bookmarks and a saved-only view |
 | `/post` | `PostJob` | Skill tags + milestones + asset picker → on-chain create/fund, then the off-chain record |
 | `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
 | `/profile/:address` | `Profile` | On-chain reputation aggregate (weighted average + rating count) |
+
+A connected wallet can bookmark a job from the list and switch it to a
+saved-only view (`frontend/src/hooks/useSavedJobs.ts`); bookmarks are personal
+and off-chain, stored per user, and the toggle is idempotent on both sides.
 
 Every write shows the transaction hash and a stellar.expert link, contract errors
 are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target

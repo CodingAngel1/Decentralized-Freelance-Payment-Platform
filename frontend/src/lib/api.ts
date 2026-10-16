@@ -105,6 +105,38 @@ export interface CreateJobInput {
 }
 
 /**
+ * The caller's bookmarked jobs, most recently saved first (issue #71).
+ *
+ * Returns the same shape as `fetchJobs`, so the dashboard renders a saved job
+ * with the component it already uses for every other row.
+ */
+export async function fetchSavedJobs(token: string): Promise<JobApi[]> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/saved`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not load saved jobs (HTTP ${res.status})`);
+  return (await res.json()) as JobApi[];
+}
+
+/** Bookmark a job. Idempotent on the server, so a double click is harmless. */
+export async function saveJob(jobId: string, token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/save`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not save the job (HTTP ${res.status})`);
+}
+
+/** Remove a bookmark. Unsaving one that was never saved is not an error. */
+export async function unsaveJob(jobId: string, token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/save`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not remove the bookmark (HTTP ${res.status})`);
+}
+
+/**
  * Complete the wallet challenge-response flow and return a bearer token.
  * `signMessage` signs the challenge nonce per SEP-53 (see Freighter).
  */

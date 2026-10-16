@@ -4,11 +4,14 @@
  * GET  /api/jobs          — list jobs (filterable by status, client, freelancer, tag)
  * POST /api/jobs          — create a job (off-chain record; escrow funded separately)
  * GET  /api/jobs/tags     — the curated skill-tag list
+ * GET  /api/jobs/saved    — the caller's bookmarked jobs
+ * POST /api/jobs/:id/save   — bookmark a job
+ * DELETE /api/jobs/:id/save — remove a bookmark
  * GET  /api/jobs/:id      — get single job with milestones
  * PUT  /api/jobs/:id/assign — client assigns a freelancer
  *
- * Route order matters: `/tags` is registered before `/:id`, or the literal path
- * would be read as a job id.
+ * Route order matters: the literal paths (`/tags`, `/saved`) are registered
+ * before `/:id`, or they would be read as job ids.
  */
 
 import { Router } from "express";
@@ -70,6 +73,66 @@ jobsRouter.get("/", async (req, res, next) => {
 // and the filter without duplicating the list (issue #70).
 jobsRouter.get("/tags", (_req, res) => {
   res.json(SKILL_TAGS);
+});
+
+// GET /api/jobs/saved — the caller's bookmarks, most recently saved first.
+//
+// Returns job rows (not bookmark rows) so the client can render them with the
+// same list component it uses for `GET /api/jobs` (issue #71).
+jobsRouter.get("/saved", requireAuth, async (_req, res, next) => {
+  try {
+    const saved = await prisma.savedJob.findMany({
+      where: { user: { stellarAddress: res.locals.stellarAddress } },
+      orderBy: { createdAt: "desc" },
+      include: { job: { include: { milestones: true, client: true, freelancer: true } } },
+    });
+    res.json(saved.map((entry) => entry.job));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/jobs/:id/save
+//
+// Idempotent: `upsert` on the (user, job) key, so a double click leaves one
+// bookmark rather than a 409 the UI has to interpret.
+jobsRouter.post("/:id/save", requireAuth, async (req, res, next) => {
+  try {
+    const job = await prisma.job.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!job) throw new AppError(404, "Job not found");
+
+    const user = await prisma.user.findUnique({
+      where: { stellarAddress: res.locals.stellarAddress },
+      select: { id: true },
+    });
+    if (!user) throw new AppError(404, "User not found — call /api/users/auth first");
+
+    const saved = await prisma.savedJob.upsert({
+      where: { userId_jobId: { userId: user.id, jobId: job.id } },
+      create: { userId: user.id, jobId: job.id },
+      update: {},
+    });
+    res.status(201).json(saved);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/jobs/:id/save — unsaving something that was never saved is a
+// no-op, not an error, so the toggle always settles.
+jobsRouter.delete("/:id/save", requireAuth, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { stellarAddress: res.locals.stellarAddress },
+      select: { id: true },
+    });
+    if (!user) throw new AppError(404, "User not found — call /api/users/auth first");
+
+    await prisma.savedJob.deleteMany({ where: { userId: user.id, jobId: req.params.id } });
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
 });
 
 // POST /api/jobs

@@ -3,9 +3,11 @@
  *
  * Issue #70: jobs carry curated skill tags, the list can be filtered by one,
  * and the taxonomy itself is served so a client does not have to hardcode it.
+ * Issue #71: a user can bookmark a job and read their own bookmark list.
  *
  * `prisma` is stubbed, so these assert the queries the routes build (which
- * filter reaches the database) rather than storage behaviour.
+ * filter reaches the database, whose bookmarks are read) rather than storage
+ * behaviour.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,9 +27,12 @@ const h = vi.hoisted(() => ({
     update: vi.fn(),
   },
   user: { findUnique: vi.fn() },
+  savedJob: { findMany: vi.fn(), upsert: vi.fn(), deleteMany: vi.fn() },
 }));
 
-vi.mock("../db", () => ({ prisma: { job: h.job, user: h.user } }));
+vi.mock("../db", () => ({
+  prisma: { job: h.job, user: h.user, savedJob: h.savedJob },
+}));
 
 let baseUrl: string;
 let server: Server;
@@ -58,10 +63,21 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  for (const fn of [h.job.findMany, h.job.create, h.job.findUnique, h.job.update, h.user.findUnique]) {
+  for (const fn of [
+    h.job.findMany,
+    h.job.create,
+    h.job.findUnique,
+    h.job.update,
+    h.user.findUnique,
+    h.savedJob.findMany,
+    h.savedJob.upsert,
+    h.savedJob.deleteMany,
+  ]) {
     fn.mockReset();
   }
   h.job.findMany.mockResolvedValue([]);
+  h.user.findUnique.mockResolvedValue({ id: "user_client" });
+  h.job.findUnique.mockResolvedValue({ id: "job_1" });
 });
 
 async function tokenFor(address: string): Promise<string> {
@@ -76,6 +92,14 @@ async function get(path: string) {
   return { status: res.status, body: (await res.json()) as any };
 }
 
+async function getAuthed(path: string, address = CLIENT) {
+  const res = await fetch(`${baseUrl}/api/jobs${path}`, {
+    headers: { Authorization: `Bearer ${await tokenFor(address)}` },
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? (JSON.parse(text) as any) : null };
+}
+
 async function post(body: unknown, address = CLIENT) {
   const res = await fetch(`${baseUrl}/api/jobs`, {
     method: "POST",
@@ -86,6 +110,15 @@ async function post(body: unknown, address = CLIENT) {
     body: JSON.stringify(body),
   });
   return { status: res.status, body: (await res.json()) as any };
+}
+
+async function sendWithToken(method: string, path: string, address = CLIENT) {
+  const res = await fetch(`${baseUrl}/api/jobs${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${await tokenFor(address)}` },
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? (JSON.parse(text) as any) : null };
 }
 
 const validJob = () => ({
@@ -148,9 +181,117 @@ describe("GET /api/jobs?tag=", () => {
   });
 });
 
-describe("POST /api/jobs with tags", () => {
-  beforeEach(() => h.user.findUnique.mockResolvedValue({ id: "user_client" }));
+describe("GET /api/jobs/saved", () => {
+  it("returns the caller's bookmarks as job rows, newest first", async () => {
+    h.savedJob.findMany.mockResolvedValue([
+      { id: "saved_1", createdAt: new Date(), job: { id: "job_1", title: "A" } },
+      { id: "saved_2", createdAt: new Date(), job: { id: "job_2", title: "B" } },
+    ]);
 
+    const res = await getAuthed("/saved", CLIENT);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((job: any) => job.id)).toEqual(["job_1", "job_2"]);
+    // Scoped to the caller, and the job comes back with its relations so the
+    // dashboard can render it like any other row.
+    expect(h.savedJob.findMany.mock.calls[0][0]).toMatchObject({
+      where: { user: { stellarAddress: CLIENT } },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(h.savedJob.findMany.mock.calls[0][0].include.job.include.milestones).toBe(true);
+  });
+
+  it("lists each user's own bookmarks", async () => {
+    h.savedJob.findMany.mockResolvedValue([]);
+
+    await getAuthed("/saved", CLIENT);
+
+    expect(h.savedJob.findMany.mock.calls[0][0].where).toEqual({
+      user: { stellarAddress: CLIENT },
+    });
+  });
+
+  it("requires a token", async () => {
+    const res = await fetch(`${baseUrl}/api/jobs/saved`);
+
+    expect(res.status).toBe(401);
+    expect(h.savedJob.findMany).not.toHaveBeenCalled();
+  });
+
+  it("is not mistaken for a job id", async () => {
+    h.savedJob.findMany.mockResolvedValue([]);
+
+    await getAuthed("/saved", CLIENT);
+
+    expect(h.job.findUnique).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/jobs/:id/save", () => {
+  it("bookmarks the job for the caller, idempotently", async () => {
+    h.savedJob.upsert.mockResolvedValue({ id: "saved_1" });
+
+    const res = await sendWithToken("POST", "/job_1/save", CLIENT);
+
+    expect(res.status).toBe(201);
+    // Keyed on (user, job): saving twice updates nothing instead of creating a
+    // second row or answering with a conflict.
+    expect(h.savedJob.upsert.mock.calls[0][0]).toEqual({
+      where: { userId_jobId: { userId: "user_client", jobId: "job_1" } },
+      create: { userId: "user_client", jobId: "job_1" },
+      update: {},
+    });
+  });
+
+  it("404s a job that does not exist", async () => {
+    h.job.findUnique.mockResolvedValue(null);
+
+    const res = await sendWithToken("POST", "/job_missing/save", CLIENT);
+
+    expect(res.status).toBe(404);
+    expect(h.savedJob.upsert).not.toHaveBeenCalled();
+  });
+
+  it("404s an authenticated address with no user record", async () => {
+    h.user.findUnique.mockResolvedValue(null);
+
+    const res = await sendWithToken("POST", "/job_1/save", CLIENT);
+
+    expect(res.status).toBe(404);
+    expect(h.savedJob.upsert).not.toHaveBeenCalled();
+  });
+
+  it("requires a token", async () => {
+    const res = await fetch(`${baseUrl}/api/jobs/job_1/save`, { method: "POST" });
+
+    expect(res.status).toBe(401);
+    expect(h.savedJob.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /api/jobs/:id/save", () => {
+  it("removes the caller's bookmark", async () => {
+    h.savedJob.deleteMany.mockResolvedValue({ count: 1 });
+
+    const res = await sendWithToken("DELETE", "/job_1/save", CLIENT);
+
+    expect(res.status).toBe(204);
+    expect(h.savedJob.deleteMany).toHaveBeenCalledWith({
+      where: { userId: "user_client", jobId: "job_1" },
+    });
+  });
+
+  it("is a no-op when nothing was bookmarked", async () => {
+    h.savedJob.deleteMany.mockResolvedValue({ count: 0 });
+
+    const res = await sendWithToken("DELETE", "/job_1/save", CLIENT);
+
+    // Unsaving something never saved must not error, or the toggle sticks.
+    expect(res.status).toBe(204);
+  });
+});
+
+describe("POST /api/jobs with tags", () => {
   it("stores the chosen tags on the job", async () => {
     h.job.create.mockResolvedValue({ id: "job_1", tags: ["ui-ux-design"] });
 

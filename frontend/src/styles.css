@@ -221,6 +221,22 @@ fieldset {
   display: block;
 }
 
+/* --- Saved jobs --------------------------------------------------------- */
+
+/* The bookmark toggle sits at the end of a job row, so it stays small. */
+.btn-save,
+.btn-saved {
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.btn-saved {
+  background: #e6f0fd;
+  border-color: #bcd4f6;
+  color: #1d4ed8;
+}
+
 /* --- Skill tags --------------------------------------------------------- */
 
 .tag {

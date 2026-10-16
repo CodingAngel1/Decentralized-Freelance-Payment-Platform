@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { authenticate, buildJobsQuery, createDispute, createJob, linkDisputeId, submitRating } from "./api";
+import {
+  authenticate,
+  buildJobsQuery,
+  createDispute,
+  createJob,
+  fetchSavedJobs,
+  linkDisputeId,
+  saveJob,
+  submitRating,
+  unsaveJob,
+} from "./api";
 
 describe("buildJobsQuery", () => {
   it("omits empty filters", () => {
@@ -59,6 +69,57 @@ describe("authenticate", () => {
       signature: "sig-base64",
       nonce: "nonce-1",
     });
+  });
+});
+
+describe("bookmarks", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("GETs the saved jobs with a bearer token", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify([{ id: "job-1", title: "Bookmarked" }]), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const jobs = await fetchSavedJobs("jwt-1");
+
+    expect(jobs[0].id).toBe("job-1");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/jobs/saved");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-1");
+  });
+
+  it("POSTs a bookmark", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await saveJob("job-1", "jwt-1");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/jobs/job-1/save");
+    expect(init.method).toBe("POST");
+  });
+
+  it("DELETEs a bookmark", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await unsaveJob("job-1", "jwt-1");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/api/jobs/job-1/save");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("throws with the status when a bookmark is refused", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 401 })),
+    );
+
+    await expect(saveJob("job-1", "stale")).rejects.toThrow(/HTTP 401/);
   });
 });
 
