@@ -31,3 +31,12 @@ export function formatRemaining(seconds: number): string {
 export function formatDeadline(deadline: bigint): string {
   return new Date(Number(deadline) * 1000).toLocaleString();
 }
+
+/**
+ * An ISO timestamp (e.g. a Prisma `DateTime` serialized by the API) as a local
+ * date. Used by the profile's job history and rating list, where the day is what
+ * matters rather than the exact second.
+ */
+export function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString();
+}

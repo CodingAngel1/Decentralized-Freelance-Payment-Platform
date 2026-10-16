@@ -41,6 +41,8 @@ export interface JobApi {
   /** Asset symbol the job pays in (see lib/assets.ts). */
   asset?: string;
   totalAmountUsdc: string | number;
+  /** ISO timestamp the off-chain record was created; used to order history. */
+  createdAt?: string;
   client?: { stellarAddress: string; displayName?: string | null } | null;
   freelancer?: { stellarAddress: string } | null;
 }
@@ -55,6 +57,57 @@ export async function fetchJobs(
   });
   if (!res.ok) throw new Error(`Could not load jobs (HTTP ${res.status})`);
   return (await res.json()) as JobApi[];
+}
+
+/**
+ * Every job an address took part in, as client or as freelancer.
+ *
+ * The API filters by one role at a time, so this asks for both and merges them:
+ * a job where the same address is somehow both parties must not be listed twice.
+ * Newest first, using `createdAt` when the API provided one.
+ */
+export async function fetchUserJobs(
+  address: string,
+  signal?: AbortSignal,
+): Promise<JobApi[]> {
+  const [asClient, asFreelancer] = await Promise.all([
+    fetchJobs({ client: address, limit: 100 }, signal),
+    fetchJobs({ freelancer: address, limit: 100 }, signal),
+  ]);
+  const byId = new Map<string, JobApi>();
+  for (const job of [...asClient, ...asFreelancer]) byId.set(job.id, job);
+  return [...byId.values()].sort((a, b) =>
+    (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+  );
+}
+
+/** A single rating an address received, with the job it refers to. */
+export interface ReceivedRatingApi {
+  id: string;
+  score: number;
+  comment: string | null;
+  /** ISO timestamp the rating was stored. */
+  createdAt: string;
+  job?: { id: string; title: string; escrowId: string | number | null; status: string } | null;
+  rater?: { stellarAddress: string } | null;
+}
+
+/**
+ * The individual ratings an address received, newest first (issue #69).
+ *
+ * `GET /api/reputation/:address` only returns the aggregate; this is the detail
+ * behind it — score, job and date per rating.
+ */
+export async function fetchRatingsReceived(
+  address: string,
+  signal?: AbortSignal,
+): Promise<ReceivedRatingApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/reputation/${encodeURIComponent(address)}/ratings`,
+    { signal },
+  );
+  if (!res.ok) throw new Error(`Could not load ratings (HTTP ${res.status})`);
+  return (await res.json()) as ReceivedRatingApi[];
 }
 
 // ---------------------------------------------------------------------------

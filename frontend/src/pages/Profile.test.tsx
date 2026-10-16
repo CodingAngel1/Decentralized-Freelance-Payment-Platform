@@ -2,9 +2,10 @@
  * Profile.test.tsx
  *
  * The reputation view is read-only, but it is the page a client checks before
- * paying someone, so the three states that matter are: the aggregate, an
- * address nobody has rated yet, and a read that failed. The wallet and the SDK
- * are mocked — reputation is read from the contract, not the network here.
+ * paying someone. The states that matter are: the aggregate, the job history and
+ * the individual ratings behind it (issue #69), an address with nothing yet, and
+ * a read that failed. The wallet, the SDK and the API client are mocked — no
+ * network, no Freighter.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +23,10 @@ const h = vi.hoisted(() => ({
     publicKey: "GVIEWER" as string | null,
     connect: vi.fn(async () => "GVIEWER"),
   },
+  api: {
+    fetchUserJobs: vi.fn(),
+    fetchRatingsReceived: vi.fn(),
+  },
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -32,14 +37,46 @@ vi.mock("react-router-dom", () => ({
 }));
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
 vi.mock("../hooks/useEscrow", () => ({ useEscrow: () => h.escrow }));
+vi.mock("../lib/api", () => ({
+  fetchUserJobs: h.api.fetchUserJobs,
+  fetchRatingsReceived: h.api.fetchRatingsReceived,
+}));
 
 import Profile from "./Profile";
+import type { JobApi, ReceivedRatingApi } from "../lib/api";
 
 const ADDRESS = h.address;
 
 /** The rendered summary line, whatever markup it is spread across. */
 const summary = (text: string) =>
   screen.findByText((_content, element) => element?.textContent === text);
+
+function job(overrides: Partial<JobApi> = {}): JobApi {
+  return {
+    id: "job-1",
+    escrowId: 7,
+    title: "Landing page redesign",
+    status: "COMPLETED",
+    asset: "USDC",
+    totalAmountUsdc: "2.5",
+    createdAt: "2026-01-02T00:00:00.000Z",
+    client: { stellarAddress: ADDRESS },
+    freelancer: { stellarAddress: "GFREELANCER" },
+    ...overrides,
+  };
+}
+
+function rating(overrides: Partial<ReceivedRatingApi> = {}): ReceivedRatingApi {
+  return {
+    id: "rating-1",
+    score: 5,
+    comment: null,
+    createdAt: "2026-01-03T00:00:00.000Z",
+    job: { id: "job-1", title: "Landing page redesign", escrowId: 7, status: "COMPLETED" },
+    rater: { stellarAddress: "GFREELANCER" },
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   h.escrow.getReputation.mockReset();
@@ -50,6 +87,10 @@ beforeEach(() => {
   h.escrow.isPending.mockReturnValue(false);
   h.escrow.error = null;
   h.wallet.publicKey = "GVIEWER";
+  h.api.fetchUserJobs.mockReset();
+  h.api.fetchUserJobs.mockResolvedValue([]);
+  h.api.fetchRatingsReceived.mockReset();
+  h.api.fetchRatingsReceived.mockResolvedValue([]);
 });
 
 afterEach(() => cleanup());
@@ -112,5 +153,91 @@ describe("Profile reputation", () => {
     expect(screen.getByText(ADDRESS)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Connect Freighter" }));
     await waitFor(() => expect(h.wallet.connect).toHaveBeenCalled());
+  });
+});
+
+describe("Profile job history (#69)", () => {
+  it("lists past jobs with the role, the status and a link to the escrow", async () => {
+    h.api.fetchUserJobs.mockResolvedValue([
+      job(),
+      job({
+        id: "job-2",
+        escrowId: null,
+        title: "Draft job",
+        status: "CREATED",
+        client: { stellarAddress: "GSOMEONE_ELSE" },
+        freelancer: { stellarAddress: ADDRESS },
+      }),
+    ]);
+
+    render(<Profile />);
+
+    // The job where the profile address is the client, and the one where it is
+    // the freelancer, both belong to the history.
+    expect(await screen.findByText("Landing page redesign")).toBeTruthy();
+    expect(screen.getByText("Draft job")).toBeTruthy();
+    expect(screen.getByText(/Client · Total: 2\.5 USDC/)).toBeTruthy();
+    expect(screen.getByText(/Freelancer · Total: 2\.5 USDC/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open job #7" }).getAttribute("href")).toBe(
+      "/jobs/7",
+    );
+    // A job with no on-chain escrow is listed but not linked.
+    expect(screen.getByText("Not funded on-chain yet")).toBeTruthy();
+    expect(h.api.fetchUserJobs).toHaveBeenCalledWith(ADDRESS);
+  });
+
+  it("shows an empty state when the address has no jobs", async () => {
+    render(<Profile />);
+
+    expect(await screen.findByText("No jobs yet.")).toBeTruthy();
+  });
+
+  it("reports a failed history load instead of showing an empty list", async () => {
+    h.api.fetchUserJobs.mockRejectedValue(new Error("Could not load jobs (HTTP 500)"));
+    h.api.fetchRatingsReceived.mockResolvedValue([]);
+
+    render(<Profile />);
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Could not load jobs (HTTP 500)",
+    );
+    expect(screen.queryByText("No jobs yet.")).toBeNull();
+  });
+});
+
+describe("Profile rating breakdown (#69)", () => {
+  it("shows each rating's score, job and date", async () => {
+    h.api.fetchRatingsReceived.mockResolvedValue([
+      rating({ score: 5, createdAt: "2026-01-03T00:00:00.000Z", comment: "Great work" }),
+      rating({
+        id: "rating-2",
+        score: 3,
+        createdAt: "2026-02-04T00:00:00.000Z",
+        job: { id: "job-2", title: "Logo refresh", escrowId: null, status: "COMPLETED" },
+      }),
+    ]);
+
+    render(<Profile />);
+
+    // Score and job title, so a rating is attributable rather than an anonymous
+    // number, plus the date it was given.
+    expect(await screen.findByText("5 / 5")).toBeTruthy();
+    expect(screen.getByText("3 / 5")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Landing page redesign" }).getAttribute("href")).toBe(
+      "/jobs/7",
+    );
+    // A rating whose job never reached the chain is still shown, unlinked.
+    expect(screen.getByText("Logo refresh")).toBeTruthy();
+    expect(
+      screen.getByText(new Date("2026-01-03T00:00:00.000Z").toLocaleDateString()),
+    ).toBeTruthy();
+    expect(screen.getByText("“Great work”")).toBeTruthy();
+    expect(h.api.fetchRatingsReceived).toHaveBeenCalledWith(ADDRESS);
+  });
+
+  it("shows an empty state when the address has not been rated", async () => {
+    render(<Profile />);
+
+    expect(await screen.findByText("No ratings received yet.")).toBeTruthy();
   });
 });

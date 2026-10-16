@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { authenticate, buildJobsQuery, createDispute, createJob, linkDisputeId, submitRating } from "./api";
+import {
+  authenticate,
+  buildJobsQuery,
+  createDispute,
+  createJob,
+  fetchRatingsReceived,
+  fetchUserJobs,
+  linkDisputeId,
+  submitRating,
+} from "./api";
+import type { JobApi } from "./api";
 
 describe("buildJobsQuery", () => {
   it("omits empty filters", () => {
@@ -26,6 +36,102 @@ describe("buildJobsQuery", () => {
     expect(params.get("page")).toBe("2");
     expect(params.get("limit")).toBe("10");
     expect(qs.startsWith("?")).toBe(true);
+  });
+});
+
+function jobRow(id: string, overrides: Partial<JobApi> = {}): JobApi {
+  return {
+    id,
+    escrowId: null,
+    title: `Job ${id}`,
+    status: "ACTIVE",
+    totalAmountUsdc: "1",
+    client: { stellarAddress: "GCLIENT" },
+    ...overrides,
+  };
+}
+
+describe("fetchUserJobs", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("asks for both roles and merges them without duplicating a job", async () => {
+    // A job where the same address is the client comes back from both filters in
+    // the worst case; the history must list it once.
+    const both = jobRow("job-1", { freelancer: { stellarAddress: "GADDR" } });
+    const fetchMock = vi.fn(async (url: string) =>
+      new Response(
+        JSON.stringify(
+          url.includes("freelancer=") ? [jobRow("job-2"), both] : [both, jobRow("job-1")],
+        ),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const jobs = await fetchUserJobs("GADDR");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toContain("client=GADDR");
+    expect(fetchMock.mock.calls[1][0]).toContain("freelancer=GADDR");
+    expect(jobs.map((j) => j.id).sort()).toEqual(["job-1", "job-2"]);
+  });
+
+  it("orders the merged history by createdAt, newest first", async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      new Response(
+        JSON.stringify(
+          url.includes("client=")
+            ? [jobRow("old", { createdAt: "2026-01-01T00:00:00.000Z" })]
+            : [jobRow("new", { createdAt: "2026-05-01T00:00:00.000Z" })],
+        ),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const jobs = await fetchUserJobs("GADDR");
+
+    expect(jobs.map((j) => j.id)).toEqual(["new", "old"]);
+  });
+});
+
+describe("fetchRatingsReceived", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests the per-address ratings endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: "rating-1",
+            score: 5,
+            comment: null,
+            createdAt: "2026-01-03T00:00:00.000Z",
+            job: { id: "job-1", title: "Redesign", escrowId: "7", status: "COMPLETED" },
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ratings = await fetchRatingsReceived("GADDR");
+
+    expect(ratings[0].score).toBe(5);
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/reputation/GADDR/ratings");
+  });
+
+  it("throws with the status when the API rejects the read", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 500 })),
+    );
+
+    await expect(fetchRatingsReceived("GADDR")).rejects.toThrow(/HTTP 500/);
   });
 });
 

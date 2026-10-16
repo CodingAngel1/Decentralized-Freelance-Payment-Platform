@@ -39,6 +39,9 @@ vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
 vi.mock("../hooks/useEscrow", () => ({ useEscrow: () => h.escrow }));
 vi.mock("../lib/api", () => ({
   fetchJobs: h.fetchJobs,
+  // Profile now loads the viewed address's job history and ratings (#69).
+  fetchUserJobs: vi.fn(async () => []),
+  fetchRatingsReceived: vi.fn(async () => []),
   authenticate: vi.fn(),
   createJob: vi.fn(),
   linkEscrowId: vi.fn(),
