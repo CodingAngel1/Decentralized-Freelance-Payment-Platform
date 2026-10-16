@@ -22,6 +22,7 @@ import { useEscrow, type CreateAndFundResult } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { ASSETS, formatAmount, getAsset, toBaseUnits } from "../lib/assets";
 import { authenticate, createJob, linkEscrowId } from "../lib/api";
+import { MAX_JOB_TAGS, tagsByCategory } from "../lib/tags";
 import { CONTRACT_ADDRESSES, explorerTxUrl } from "../lib/stellar";
 
 interface MilestoneRow {
@@ -51,6 +52,8 @@ export default function PostJob() {
     ASSETS.find((a) => a.contractId)?.symbol ?? ASSETS[0]?.symbol ?? "USDC",
   );
   const [expiryDays, setExpiryDays] = useState("30");
+  // Curated skill-tag slugs attached to the job (issue #70).
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [rows, setRows] = useState<MilestoneRow[]>([{ amount: "" }]);
   const [created, setCreated] = useState<CreateAndFundResult | null>(null);
   const [recordError, setRecordError] = useState<string | null>(null);
@@ -59,6 +62,14 @@ export default function PostJob() {
 
   const updateRow = (i: number, amount: string) =>
     setRows((r) => r.map((row, idx) => (idx === i ? { amount } : row)));
+
+  /** Toggle a skill tag, never exceeding the cap the API enforces. */
+  const toggleTag = (slug: string) =>
+    setSelectedTags((prev) =>
+      prev.includes(slug)
+        ? prev.filter((entry) => entry !== slug)
+        : [...prev, slug].slice(0, MAX_JOB_TAGS),
+    );
 
   // Sum in base units and format once, so the on-screen total is the exact value
   // the API stores. Adding decimals as JavaScript numbers shows
@@ -100,6 +111,7 @@ export default function PostJob() {
           title: title.trim(),
           description: description.trim(),
           asset: asset.symbol,
+          tags: selectedTags,
           expiresAt,
           milestones: rows.map((r, i) => ({
             description: `Milestone ${i + 1}`,
@@ -171,6 +183,39 @@ export default function PostJob() {
             />
           </label>
         </p>
+
+        <fieldset>
+          <legend>
+            Skills ({selectedTags.length}/{MAX_JOB_TAGS})
+          </legend>
+          <p className="muted">
+            Tag the work so clients and freelancers can filter for it. Selection is
+            optional.
+          </p>
+          {tagsByCategory().map(({ category, tags }) => (
+            <div key={category} className="tag-group">
+              <strong>{category}</strong>
+              <div>
+                {tags.map((skill) => {
+                  const checked = selectedTags.includes(skill.slug);
+                  return (
+                    <label key={skill.slug} className="tag-option">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        // At the cap the remaining boxes lock, so the selection
+                        // can never be rejected by the API on submit.
+                        disabled={!checked && selectedTags.length >= MAX_JOB_TAGS}
+                        onChange={() => toggleTag(skill.slug)}
+                      />{" "}
+                      {skill.label}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </fieldset>
 
         <p>
           <label>

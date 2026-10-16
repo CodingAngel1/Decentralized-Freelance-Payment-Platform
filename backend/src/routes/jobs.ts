@@ -1,10 +1,14 @@
 /**
  * jobs.ts
  *
- * GET  /api/jobs          — list jobs (filterable by status, client, freelancer)
+ * GET  /api/jobs          — list jobs (filterable by status, client, freelancer, tag)
  * POST /api/jobs          — create a job (off-chain record; escrow funded separately)
+ * GET  /api/jobs/tags     — the curated skill-tag list
  * GET  /api/jobs/:id      — get single job with milestones
  * PUT  /api/jobs/:id/assign — client assigns a freelancer
+ *
+ * Route order matters: `/tags` is registered before `/:id`, or the literal path
+ * would be read as a job id.
  */
 
 import { Router } from "express";
@@ -22,18 +26,34 @@ import {
   type AssetInfo,
 } from "../lib/assets";
 import { createJobSchema } from "../lib/schemas";
+import { isSkillTag, SKILL_TAGS, SKILL_TAG_SLUGS } from "../lib/tags";
 
 export const jobsRouter = Router();
 
 // GET /api/jobs
 jobsRouter.get("/", async (req, res, next) => {
   try {
-    const { status, client, freelancer, page = "1", limit = "20" } = req.query;
+    const { status, client, freelancer, tag, page = "1", limit = "20" } = req.query;
+
+    // A tag the taxonomy does not know is a caller mistake, not "no results" —
+    // answering 400 with the accepted slugs keeps a typo from looking like an
+    // empty marketplace.
+    let tagFilter: string | undefined;
+    if (tag !== undefined) {
+      const value = String(tag);
+      if (!isSkillTag(value)) {
+        throw new AppError(400, `Unknown tag "${value}". Accepted tags: ${SKILL_TAG_SLUGS.join(", ")}`);
+      }
+      tagFilter = value;
+    }
+
     const jobs = await prisma.job.findMany({
       where: {
         ...(status ? { status: String(status) as any } : {}),
         ...(client ? { client: { stellarAddress: String(client) } } : {}),
         ...(freelancer ? { freelancer: { stellarAddress: String(freelancer) } } : {}),
+        // Postgres array containment: a job matches when its tags include this one.
+        ...(tagFilter ? { tags: { has: tagFilter } } : {}),
       },
       include: { milestones: true, client: true, freelancer: true },
       orderBy: { createdAt: "desc" },
@@ -46,10 +66,16 @@ jobsRouter.get("/", async (req, res, next) => {
   }
 });
 
+// GET /api/jobs/tags — the curated taxonomy, so a client can render the picker
+// and the filter without duplicating the list (issue #70).
+jobsRouter.get("/tags", (_req, res) => {
+  res.json(SKILL_TAGS);
+});
+
 // POST /api/jobs
 jobsRouter.post("/", requireAuth, validate(createJobSchema), async (req, res, next) => {
   try {
-    const { title, description, milestones, expiresAt, asset } = req.body as z.infer<
+    const { title, description, milestones, expiresAt, asset, tags } = req.body as z.infer<
       typeof createJobSchema
     >;
 
@@ -80,6 +106,7 @@ jobsRouter.post("/", requireAuth, validate(createJobSchema), async (req, res, ne
         title,
         description,
         asset: assetInfo.symbol,
+        tags,
         totalAmountUsdc,
         clientId: client.id,
         expiresAt: expiresAt ? new Date(expiresAt) : undefined,

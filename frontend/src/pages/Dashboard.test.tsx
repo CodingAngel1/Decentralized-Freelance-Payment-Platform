@@ -34,6 +34,7 @@ vi.mock("../lib/api", () => ({ fetchJobs: h.fetchJobs }));
 
 import Dashboard from "./Dashboard";
 import type { JobApi } from "../lib/api";
+import { SKILL_TAGS } from "../lib/tags";
 
 const CLIENT = "GBPLJHDI6RPLS4EEJJTM7EVEV3UNTXLFAACWA63QSTHGLWH5RO3LQ75B";
 
@@ -135,6 +136,26 @@ describe("Dashboard job list", () => {
     expect(screen.getByText("Not funded on-chain yet")).toBeTruthy();
   });
 
+  it("shows each job's skill tags by their display label", async () => {
+    h.fetchJobs.mockResolvedValue([job({ tags: ["web-development", "devops"] })]);
+
+    render(<Dashboard />);
+
+    await screen.findByText("Landing page redesign");
+    // Labels, not the stored slugs. Scoped to the row badge: the same label is
+    // also an option in the skill filter.
+    expect(screen.getByText("Web development", { selector: "span.tag" })).toBeTruthy();
+    expect(screen.getByText("DevOps & infrastructure", { selector: "span.tag" })).toBeTruthy();
+  });
+
+  it("tolerates a job with no tags at all", async () => {
+    h.fetchJobs.mockResolvedValue([job({ tags: undefined })]);
+
+    render(<Dashboard />);
+
+    expect(await screen.findByText("Landing page redesign")).toBeTruthy();
+  });
+
   it("shows an empty state rather than a blank list", async () => {
     render(<Dashboard />);
 
@@ -165,6 +186,35 @@ describe("Dashboard job list", () => {
 
     // Back to page 1: page 3 of the previous filter is meaningless under a new one.
     await waitFor(() => expect(lastQuery()).toEqual({ status: "COMPLETED", page: 1, limit: 10 }));
+  });
+
+  it("filters by skill tag and re-fetches from page 1", async () => {
+    h.fetchJobs.mockResolvedValue([job()]);
+    render(<Dashboard />);
+    await screen.findByText("Landing page redesign");
+
+    fireEvent.change(screen.getByLabelText(/Filter by skill/), {
+      target: { value: "smart-contracts" },
+    });
+
+    // The tag is applied by the API, so pagination stays correct.
+    await waitFor(() =>
+      expect(lastQuery()).toEqual({
+        status: undefined,
+        tag: "smart-contracts",
+        page: 1,
+        limit: 10,
+      }),
+    );
+  });
+
+  it("offers every curated skill in the filter", async () => {
+    render(<Dashboard />);
+    await screen.findByText("No jobs found.");
+
+    const select = screen.getByLabelText(/Filter by skill/) as HTMLSelectElement;
+    // "All skills" plus one option per curated tag.
+    expect(select.querySelectorAll("option")).toHaveLength(SKILL_TAGS.length + 1);
   });
 
   it("appends the next page when asked for more", async () => {

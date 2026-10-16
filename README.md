@@ -72,7 +72,7 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | Testnet deployment | ✅ Deployed and initialized (ids in [`deployments/testnet.json`](./deployments/testnet.json)) |
 | Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation |
 | Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC, with a dead-letter table for events it cannot apply |
-| Job discovery / filtering | ✅ Dashboard lists jobs with status/pagination (from the backend API) |
+| Job discovery / filtering | ✅ Dashboard lists jobs with status + skill-tag filters and pagination (from the backend API) |
 | Multi-arbitrator / timelocked disputes | ✅ Panel with a timelock escape hatch from `Disputed` (see [`docs/DISPUTES.md`](./docs/DISPUTES.md)) |
 | Dispute resolution authorization | ✅ `POST /api/disputes/:id/resolve` requires an `ARBITRATOR_ADDRESSES` entry, and fails closed when unset |
 | Assets beyond USDC | ✅ Registry with USDC + XLM (`docs/ASSETS.md`); any SAC can be registered |
@@ -170,7 +170,8 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/users/auth` | — | Verify the signed message, return a JWT |
 | `GET` | `/api/users/:address` | — | Public profile |
 | `PUT` | `/api/users/me` | ✅ | Update your own profile |
-| `GET` | `/api/jobs` | — | List jobs with status filter + pagination |
+| `GET` | `/api/jobs` | — | List jobs with status + `tag` filters and pagination |
+| `GET` | `/api/jobs/tags` | — | The curated skill-tag taxonomy |
 | `POST` | `/api/jobs` | ✅ | Create the off-chain job record |
 | `GET` | `/api/jobs/:id` | — | Job detail with milestones |
 | `PUT` | `/api/jobs/:id/assign` | ✅ | Assign a freelancer |
@@ -188,6 +189,18 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/reputation` | ✅ | Build `reputation.submit` |
 | `GET` | `/api/reputation/:address` | — | Aggregate reputation |
 
+### Skills and categories
+
+Jobs carry curated skill tags (issue #70). `backend/src/lib/tags.ts` holds the
+canonical taxonomy — 16 slugs grouped across Development, Blockchain, Data,
+Design, Content, Media and Business — and `createJobSchema` rejects anything
+outside it, de-duplicates, and caps a job at 8 tags. `GET /api/jobs/tags`
+serves the list, and `GET /api/jobs?tag=<slug>` filters with an indexed
+containment query. The frontend keeps a mirror of the same list in
+`frontend/src/lib/tags.ts` so the picker renders without a round-trip; the
+backend copy is canonical, and `backend/src/__tests__/tags.test.ts` fails if the
+two ever drift apart.
+
 Rate limiting is 100 requests/minute per IP. The **event indexer** runs
 in-process, polling Soroban RPC for the configured contracts and applying events
 to the database. Failures are recorded in `IndexerDeadLetter` rather than
@@ -199,8 +212,8 @@ React + TypeScript + Vite, with Freighter for signing.
 
 | Route | Page | Purpose |
 |-------|------|---------|
-| `/` | `Dashboard` | Filterable, paginated job list from the API |
-| `/post` | `PostJob` | Milestones + asset picker → on-chain create/fund, then the off-chain record |
+| `/` | `Dashboard` | Filterable by status and skill tag, paginated job list from the API |
+| `/post` | `PostJob` | Skill tags + milestones + asset picker → on-chain create/fund, then the off-chain record |
 | `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
 | `/profile/:address` | `Profile` | On-chain reputation aggregate (weighted average + rating count) |
 

@@ -38,6 +38,8 @@ model Job {
   status          JobStatus @default(CREATED)
   /// Asset symbol the job pays in (see lib/assets.ts)
   asset           String    @default("USDC")
+  /// Curated skill tags (slugs from lib/tags.ts, issue #70)
+  tags            String[]  @default([])
 
   clientId        String
   client          User      @relation("ClientJobs", fields: [clientId], references: [id])
@@ -61,6 +63,9 @@ model Job {
   // GET /api/users/:address counts jobsAsClient / jobsAsFreelancer by them.
   @@index([clientId])
   @@index([freelancerId])
+  // GET /api/jobs?tag=… filters with array containment (`tags @> ARRAY[?]`),
+  // which GIN serves and a btree on an array column would not.
+  @@index([tags(ops: ArrayOps)], type: Gin)
 }
 
 enum JobStatus {

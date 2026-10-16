@@ -3,6 +3,10 @@
  *
  * Landing page: connect the wallet, browse the job list, and open a job by
  * its on-chain id. The list comes from `GET /api/jobs`.
+ *
+ * The list can be narrowed by status and by skill tag (issue #70); the tag is
+ * sent as `?tag=<slug>` and both filters are applied by the API, so pagination
+ * stays correct instead of filtering a page client-side.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -11,6 +15,7 @@ import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
 import { fetchJobs, type JobApi } from "../lib/api";
+import { SKILL_TAGS, tagLabel } from "../lib/tags";
 import { useWallet } from "../hooks/wallet-context";
 
 const PAGE_SIZE = 10;
@@ -22,6 +27,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   const [status, setStatus] = useState("");
+  const [tag, setTag] = useState("");
   const [jobs, setJobs] = useState<JobApi[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
@@ -34,7 +40,12 @@ export default function Dashboard() {
       setJobsError(null);
       try {
         const data = await fetchJobs(
-          { status: status || undefined, page: pageToLoad, limit: PAGE_SIZE },
+          {
+            status: status || undefined,
+            tag: tag || undefined,
+            page: pageToLoad,
+            limit: PAGE_SIZE,
+          },
           signal,
         );
         setJobs((prev) => (append ? [...prev, ...data] : data));
@@ -48,7 +59,7 @@ export default function Dashboard() {
         setJobsLoading(false);
       }
     },
-    [status],
+    [status, tag],
   );
 
   useEffect(() => {
@@ -111,6 +122,17 @@ export default function Dashboard() {
             </option>
           ))}
         </select>
+      </label>{" "}
+      <label>
+        Filter by skill{" "}
+        <select value={tag} onChange={(e) => setTag(e.target.value)}>
+          <option value="">All skills</option>
+          {SKILL_TAGS.map((skill) => (
+            <option key={skill.slug} value={skill.slug}>
+              {skill.label}
+            </option>
+          ))}
+        </select>
       </label>
 
       {jobsError && (
@@ -130,6 +152,16 @@ export default function Dashboard() {
           {jobs.map((job) => (
             <li key={job.id}>
               <strong>{job.title}</strong> <StatusBadge status={job.status} />
+              {job.tags && job.tags.length > 0 && (
+                <>
+                  {" "}
+                  {job.tags.map((slug) => (
+                    <span key={slug} className="tag">
+                      {tagLabel(slug)}
+                    </span>
+                  ))}
+                </>
+              )}
               <br />
               <span className="muted">
                 Client:{" "}

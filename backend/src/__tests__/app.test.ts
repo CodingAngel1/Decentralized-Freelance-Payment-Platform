@@ -3,6 +3,7 @@ import { Keypair } from "@stellar/stellar-sdk";
 import { isValidStellarAddress } from "../lib/stellarAddress";
 import { createJobSchema } from "../lib/schemas";
 import { jsonReplacer } from "../lib/json";
+import { MAX_JOB_TAGS, SKILL_TAG_SLUGS } from "../lib/tags";
 
 // Pure unit tests against real modules; no DB or env vars required.
 // Integration tests requiring a live DB belong in a separate test suite
@@ -93,6 +94,38 @@ describe("POST /api/jobs request validation", () => {
         createJobSchema.safeParse({ ...valid, milestones: [{ amountUsdc }] }).success,
       ).toBe(false);
     }
+  });
+});
+
+describe("POST /api/jobs skill tags", () => {
+  const valid = {
+    title: "Landing page redesign",
+    description: "What needs to be delivered by Friday",
+    milestones: [{ amountUsdc: 1.5 }],
+  };
+
+  it("defaults to no tags, so an older client keeps working", () => {
+    expect(createJobSchema.parse(valid).tags).toEqual([]);
+  });
+
+  it("accepts curated slugs", () => {
+    const parsed = createJobSchema.parse({ ...valid, tags: ["web-development", "devops"] });
+    expect(parsed.tags).toEqual(["web-development", "devops"]);
+  });
+
+  it("de-duplicates the same tag sent twice", () => {
+    expect(createJobSchema.parse({ ...valid, tags: ["marketing", "marketing"] }).tags).toEqual([
+      "marketing",
+    ]);
+  });
+
+  it("rejects a tag outside the curated list", () => {
+    expect(createJobSchema.safeParse({ ...valid, tags: ["moon-shot"] }).success).toBe(false);
+  });
+
+  it("rejects more tags than the cap", () => {
+    const tooMany = SKILL_TAG_SLUGS.slice(0, MAX_JOB_TAGS + 1);
+    expect(createJobSchema.safeParse({ ...valid, tags: tooMany }).success).toBe(false);
   });
 });
 

@@ -16,6 +16,8 @@ export interface JobListQuery {
   status?: string;
   client?: string;
   freelancer?: string;
+  /** Curated skill-tag slug (see `lib/tags.ts`); issue #70. */
+  tag?: string;
   page?: number;
   limit?: number;
 }
@@ -26,10 +28,22 @@ export function buildJobsQuery(query: JobListQuery = {}): string {
   if (query.status) params.set("status", query.status);
   if (query.client) params.set("client", query.client);
   if (query.freelancer) params.set("freelancer", query.freelancer);
+  if (query.tag) params.set("tag", query.tag);
   if (query.page !== undefined) params.set("page", String(query.page));
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   const qs = params.toString();
   return qs ? `?${qs}` : "";
+}
+
+/** A milestone row as the jobs API returns it (see the Prisma model). */
+export interface JobMilestoneApi {
+  id?: string;
+  index?: number;
+  amountUsdc: string | number;
+  description?: string | null;
+  status: string;
+  deadline?: string | null;
+  releasedAt?: string | null;
 }
 
 export interface JobApi {
@@ -40,9 +54,14 @@ export interface JobApi {
   status: string;
   /** Asset symbol the job pays in (see lib/assets.ts). */
   asset?: string;
+  /** Curated skill-tag slugs (see lib/tags.ts); issue #70. */
+  tags?: string[];
   totalAmountUsdc: string | number;
   client?: { stellarAddress: string; displayName?: string | null } | null;
   freelancer?: { stellarAddress: string } | null;
+  /** Present on the list/detail responses; used by the activity summary (#73). */
+  milestones?: JobMilestoneApi[];
+  createdAt?: string;
 }
 
 /** Fetch a page of jobs. Throws on a non-2xx response. */
@@ -76,6 +95,11 @@ export interface CreateJobInput {
   description: string;
   /** Asset symbol the job pays in; the backend stores it on the job. */
   asset: string;
+  /**
+   * Curated skill-tag slugs describing the work (see lib/tags.ts). Optional:
+   * the API defaults an absent list to none, so an older client still works.
+   */
+  tags?: string[];
   milestones: CreateJobMilestoneInput[];
   expiresAt?: string;
 }

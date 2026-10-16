@@ -16,6 +16,7 @@ describe("buildJobsQuery", () => {
       status: "COMPLETED",
       client: "GABCD",
       freelancer: "GEFGH",
+      tag: "web-development",
       page: 2,
       limit: 10,
     });
@@ -23,9 +24,15 @@ describe("buildJobsQuery", () => {
     expect(params.get("status")).toBe("COMPLETED");
     expect(params.get("client")).toBe("GABCD");
     expect(params.get("freelancer")).toBe("GEFGH");
+    expect(params.get("tag")).toBe("web-development");
     expect(params.get("page")).toBe("2");
     expect(params.get("limit")).toBe("10");
     expect(qs.startsWith("?")).toBe(true);
+  });
+
+  it("omits the skill-tag filter when it is empty", () => {
+    expect(buildJobsQuery({ tag: "" })).toBe("");
+    expect(buildJobsQuery({ tag: "devops" })).toBe("?tag=devops");
   });
 });
 
