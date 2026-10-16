@@ -77,7 +77,7 @@ export default function Dashboard() {
       )}
 
       {walletError && (
-        <p role="alert" className="alert alert-error">
+        <p role="alert" aria-live="assertive" className="alert alert-error">
           {walletError}
         </p>
       )}
@@ -88,9 +88,10 @@ export default function Dashboard() {
           if (jobId.trim()) navigate(`/jobs/${jobId.trim()}`);
         }}
       >
-        <label>
+        <label htmlFor="open-job-input">
           Open a job by on-chain id{" "}
           <input
+            id="open-job-input"
             value={jobId}
             onChange={(e) => setJobId(e.target.value)}
             placeholder="0"
@@ -101,9 +102,13 @@ export default function Dashboard() {
 
       <h2>All jobs</h2>
 
-      <label>
+      <label htmlFor="filter-status-select">
         Filter by status{" "}
-        <select value={status} onChange={(e) => setStatus(e.target.value)}>
+        <select
+          id="filter-status-select"
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+        >
           <option value="">All</option>
           {STATUSES.map((s) => (
             <option key={s} value={s}>
@@ -114,15 +119,21 @@ export default function Dashboard() {
       </label>
 
       {jobsError && (
-        <p role="alert" className="alert alert-error">
+        <p role="alert" aria-live="assertive" className="alert alert-error">
           {jobsError}
         </p>
       )}
 
-      {jobsLoading && jobs.length === 0 && <p>Loading jobs…</p>}
+      {jobsLoading && jobs.length === 0 && (
+        <p role="status" aria-live="polite">
+          Loading jobs…
+        </p>
+      )}
 
       {!jobsLoading && !jobsError && jobs.length === 0 && (
-        <p className="muted">No jobs found.</p>
+        <p className="muted" role="status" aria-live="polite">
+          No jobs found.
+        </p>
       )}
 
       {jobs.length > 0 && (

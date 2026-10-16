@@ -141,10 +141,11 @@ export default function PostJob() {
 
       <form onSubmit={handleSubmit}>
         <p>
-          <label>
+          <label htmlFor="post-job-title">
             Title
             <br />
             <input
+              id="post-job-title"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Landing page redesign"
@@ -157,10 +158,11 @@ export default function PostJob() {
         </p>
 
         <p>
-          <label>
+          <label htmlFor="post-job-description">
             Description
             <br />
             <textarea
+              id="post-job-description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What needs to be delivered…"
@@ -173,9 +175,13 @@ export default function PostJob() {
         </p>
 
         <p>
-          <label>
+          <label htmlFor="post-job-asset">
             Payment asset{" "}
-            <select value={assetSymbol} onChange={(e) => setAssetSymbol(e.target.value)}>
+            <select
+              id="post-job-asset"
+              value={assetSymbol}
+              onChange={(e) => setAssetSymbol(e.target.value)}
+            >
               {ASSETS.map((a) => (
                 <option key={a.symbol} value={a.symbol} disabled={!a.contractId}>
                   {a.symbol}
@@ -192,10 +198,11 @@ export default function PostJob() {
         </p>
 
         <p>
-          <label>
+          <label htmlFor="post-job-freelancer">
             Freelancer Stellar address
             <br />
             <input
+              id="post-job-freelancer"
               value={freelancer}
               onChange={(e) => setFreelancer(e.target.value)}
               placeholder="G..."
@@ -209,9 +216,10 @@ export default function PostJob() {
           <legend>Milestones ({asset.symbol})</legend>
           {rows.map((row, i) => (
             <p key={i}>
-              <label>
+              <label htmlFor={`milestone-amount-${i}`}>
                 Amount #{i + 1}{" "}
                 <input
+                  id={`milestone-amount-${i}`}
                   type="number"
                   min="0"
                   step={`0.${"0".repeat(asset.decimals - 1)}1`}
@@ -221,7 +229,11 @@ export default function PostJob() {
                 />
               </label>{" "}
               {rows.length > 1 && (
-                <button type="button" onClick={() => setRows((r) => r.filter((_, x) => x !== i))}>
+                <button
+                  type="button"
+                  aria-label={`Remove milestone ${i + 1}`}
+                  onClick={() => setRows((r) => r.filter((_, x) => x !== i))}
+                >
                   Remove
                 </button>
               )}
@@ -236,9 +248,10 @@ export default function PostJob() {
         </fieldset>
 
         <p>
-          <label>
+          <label htmlFor="post-job-expiry">
             Expiry (days from now){" "}
             <input
+              id="post-job-expiry"
               type="number"
               min="1"
               value={expiryDays}
@@ -251,6 +264,7 @@ export default function PostJob() {
           type="submit"
           className="btn-primary"
           disabled={isPending("create") || connecting || !asset.contractId}
+          aria-busy={isPending("create")}
         >
           {isPending("create")
             ? "Submitting…"
@@ -261,13 +275,13 @@ export default function PostJob() {
       </form>
 
       {error && (
-        <p role="alert" className="alert alert-error">
+        <p role="alert" aria-live="assertive" className="alert alert-error">
           {error}
         </p>
       )}
 
       {created && (
-        <p className="alert">
+        <p role="status" aria-live="polite" className="alert">
           Escrow #{created.id.toString()} created and funded. Transaction{" "}
           <a
             href={explorerTxUrl(created.hash)}
@@ -282,7 +296,7 @@ export default function PostJob() {
       )}
 
       {recordError && (
-        <p role="alert" className="alert alert-error">
+        <p role="alert" aria-live="assertive" className="alert alert-error">
           On-chain escrow created, but the job record was not saved: {recordError}
         </p>
       )}

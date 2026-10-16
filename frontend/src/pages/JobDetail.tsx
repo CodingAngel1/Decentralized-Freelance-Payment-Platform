@@ -266,7 +266,7 @@ export default function JobDetail() {
       )}
 
       {(error || loadError) && (
-        <p role="alert" className="alert alert-error">
+        <p role="alert" aria-live="assertive" className="alert alert-error">
           {error ?? loadError}
         </p>
       )}
@@ -301,6 +301,7 @@ export default function JobDetail() {
                 {isClient && isActive && !m.released && (
                   <button
                     disabled={isPending("release", `${escrowId}:${i}`)}
+                    aria-busy={isPending("release", `${escrowId}:${i}`)}
                     onClick={() =>
                       void releaseMilestone(escrowId, i).then((res) => {
                         if (res) setLastHash(res.hash);
@@ -318,10 +319,11 @@ export default function JobDetail() {
           {isParticipant && isActive && (
             <form onSubmit={handleOpenDispute}>
               <p>
-                <label>
+                <label htmlFor="dispute-reason">
                   Reason for the dispute
                   <br />
                   <textarea
+                    id="dispute-reason"
                     value={reason}
                     onChange={(e) => setReason(e.target.value)}
                     minLength={MIN_REASON}
@@ -336,6 +338,7 @@ export default function JobDetail() {
               <button
                 type="submit"
                 disabled={reason.trim().length < MIN_REASON || isPending("dispute", `${escrowId}`)}
+                aria-busy={isPending("dispute", `${escrowId}`)}
                 title={
                   reason.trim().length < MIN_REASON
                     ? `A reason of at least ${MIN_REASON} characters is required`
@@ -346,7 +349,11 @@ export default function JobDetail() {
               </button>
             </form>
           )}
-          {disputeNote && <p className="muted">{disputeNote}</p>}
+          {disputeNote && (
+            <p role="status" aria-live="polite" className="muted">
+              {disputeNote}
+            </p>
+          )}
           {isDisputed && (
             <section>
               <p className="muted">This escrow is frozen pending arbitration.</p>
@@ -367,6 +374,7 @@ export default function JobDetail() {
               {isClient && (
                 <button
                   disabled={!deadlinePassed || isPending("reclaim", `${escrowId}`)}
+                  aria-busy={isPending("reclaim", `${escrowId}`)}
                   title={
                     deadlinePassed
                       ? "Refund the unreleased funds to your wallet"
@@ -397,9 +405,10 @@ export default function JobDetail() {
                 <fieldset disabled={isPending("rate")}>
                   <legend>Score</legend>
                   {SCORES.map((n) => (
-                    <label key={n}>
+                    <label key={n} htmlFor={`rating-score-${n}`}>
                       <input
                         type="radio"
+                        id={`rating-score-${n}`}
                         name="score"
                         value={n}
                         checked={score === n}
@@ -410,10 +419,11 @@ export default function JobDetail() {
                   ))}
                 </fieldset>
                 <p>
-                  <label>
+                  <label htmlFor="rating-comment">
                     Comment (optional)
                     <br />
                     <textarea
+                      id="rating-comment"
                       value={comment}
                       onChange={(e) => setComment(e.target.value)}
                       maxLength={500}
@@ -422,7 +432,11 @@ export default function JobDetail() {
                     />
                   </label>
                 </p>
-                <button type="submit" disabled={score < 1 || isPending("rate")}>
+                <button
+                  type="submit"
+                  disabled={score < 1 || isPending("rate")}
+                  aria-busy={isPending("rate")}
+                >
                   {isPending("rate") ? "Submitting…" : "Submit rating"}
                 </button>
               </form>
@@ -430,15 +444,19 @@ export default function JobDetail() {
           )}
 
           {ratingDone && (
-            <p role="status">
+            <p role="status" aria-live="polite">
               {alreadyRated ? "You've already rated this job." : "Thanks — your rating was submitted."}{" "}
               <Link to={`/profile/${counterparty}`}>View reputation →</Link>
             </p>
           )}
-          {commentNote && <p className="muted">{commentNote}</p>}
+          {commentNote && (
+            <p role="status" aria-live="polite" className="muted">
+              {commentNote}
+            </p>
+          )}
 
           {lastHash && (
-            <p>
+            <p role="status" aria-live="polite">
               Last transaction:{" "}
               <a
                 href={explorerTxUrl(lastHash)}
