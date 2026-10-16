@@ -90,7 +90,7 @@ async function loadEditableJob(escrowId: bigint, address: string) {
 }
 
 // POST /api/escrow/build/create
-const buildCreateSchema = z.object({
+export const buildCreateSchema = z.object({
   jobId: z.string(),
   freelancerAddress: z.string().refine(isValidStellarAddress, "Invalid Stellar address"),
   expiryTimestamp: z.number().int().positive(),
@@ -137,7 +137,7 @@ escrowRouter.post("/build/create", requireAuth, validate(buildCreateSchema), asy
 });
 
 /** A milestone being edited, in whole units (the UI's unit), deadline optional. */
-const editableMilestoneSchema = z.object({
+export const editableMilestoneSchema = z.object({
   description: z.string().max(200).optional(),
   amountUsdc: z.number().positive(),
   deadline: z.string().datetime().optional(),
@@ -149,7 +149,7 @@ const editableMilestoneSchema = z.object({
 // while the escrow is still unfunded. The route takes whole-unit amounts and
 // encodes them exactly like `build/create`, so both paths produce identical
 // arguments for the same edit.
-const updateMilestonesSchema = z.object({
+export const updateMilestonesSchema = z.object({
   escrowId: z.number().int().nonnegative(),
   milestones: z.array(editableMilestoneSchema).min(1),
 });
@@ -194,7 +194,7 @@ escrowRouter.post(
 // `create`/`fund`. The indexer still reconciles the total from the event
 // (`handleMilestonesUpdated` in indexer.ts), so an edit that is never recorded
 // still cannot leave a stale total behind.
-const recordMilestonesSchema = z.object({
+export const recordMilestonesSchema = z.object({
   milestones: z.array(editableMilestoneSchema).min(1),
 });
 
@@ -264,7 +264,7 @@ escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: z.nu
 });
 
 // POST /api/escrow/build/release
-const releaseSchema = z.object({ escrowId: z.number(), milestoneIndex: z.number().int().min(0) });
+export const releaseSchema = z.object({ escrowId: z.number(), milestoneIndex: z.number().int().min(0) });
 
 escrowRouter.post("/build/release", requireAuth, validate(releaseSchema), async (req, res, next) => {
   try {
@@ -327,7 +327,7 @@ escrowRouter.post(
 );
 
 // POST /api/escrow/sync/:jobId — called by frontend after tx confirmed
-const syncSchema = z.object({ escrowId: z.number() });
+export const syncSchema = z.object({ escrowId: z.number() });
 
 escrowRouter.post("/sync/:jobId", requireAuth, validate(syncSchema), async (req, res, next) => {
   try {

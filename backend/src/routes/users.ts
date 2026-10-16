@@ -49,7 +49,7 @@ usersRouter.get("/challenge", async (req, res, next) => {
 });
 
 // POST /api/users/auth
-const authSchema = z.object({
+export const authSchema = z.object({
   address: z.string().refine(isValidStellarAddress, "Invalid Stellar address"),
   /** Base64-encoded signature of the nonce */
   signature: z.string(),
@@ -102,7 +102,7 @@ usersRouter.get("/:address", async (req, res, next) => {
 });
 
 // PUT /api/users/me
-const updateSchema = z.object({
+export const updateSchema = z.object({
   displayName: z.string().max(80).optional(),
   bio: z.string().max(500).optional(),
 });

@@ -193,6 +193,22 @@ in-process, polling Soroban RPC for the configured contracts and applying events
 to the database. Failures are recorded in `IndexerDeadLetter` rather than
 dropped, and the cursor is persisted so restarts resume where they left off.
 
+### OpenAPI spec
+
+The routes are also described in OpenAPI 3.0, generated from the same Zod
+schemas `validate()` enforces so the spec and the validation cannot drift.
+Outside production the API serves the document and a Swagger UI explorer:
+
+| Path | Purpose |
+|------|---------|
+| `GET /api/docs` | Swagger UI explorer |
+| `GET /api/docs/openapi.json` | The raw OpenAPI 3.0 document |
+
+Both are registered only when `NODE_ENV !== "production"`, so a deployed
+instance exposes neither. Add a new route to `backend/src/openapi.ts`;
+`backend/src/__tests__/openapi.test.ts` walks the routers and fails if one is
+missing from the spec.
+
 ## Frontend
 
 React + TypeScript + Vite, with Freighter for signing.
