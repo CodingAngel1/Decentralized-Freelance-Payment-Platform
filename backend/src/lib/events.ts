@@ -26,6 +26,7 @@ export const KNOWN_EVENTS = new Set([
   "dispute_opened",
   "resolved",
   "refunded",
+  "dispute_contract_updated",
   "raised",
   "approved",
   "dispute_resolved",

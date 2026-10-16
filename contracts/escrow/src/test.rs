@@ -116,6 +116,23 @@ fn field<T: TryFromVal<Env, Val>>(env: &Env, data: &Val, name: &str) -> T {
     T::try_from_val(env, &value).unwrap()
 }
 
+/// Decode the `#[topic]` field (`topic[1]`) of the first event named `name`.
+fn event_topic1<T: TryFromVal<Env, Val>>(env: &Env, name: &str) -> T {
+    for e in env.events().all().events() {
+        let xdr::ContractEventBody::V0(body) = &e.body;
+        let Some(topic0) = body.topics.first() else {
+            continue;
+        };
+        let topic_val = Val::try_from_val(env, topic0).unwrap();
+        if Symbol::try_from_val(env, &topic_val).unwrap() == Symbol::new(env, name) {
+            let topic1 = body.topics.get(1).expect("event has no topic1");
+            let val = Val::try_from_val(env, topic1).unwrap();
+            return T::try_from_val(env, &val).unwrap();
+        }
+    }
+    panic!("event {name:?} not found");
+}
+
 // ---------------------------------------------------------------------------
 // create
 // ---------------------------------------------------------------------------
@@ -815,6 +832,48 @@ fn get_unknown_escrow_is_rejected() {
     let f = fixture();
     let res = f.c().try_get(&999);
     assert!(matches!(res, Err(Ok(EscrowError::NotFound))));
+}
+
+// ---------------------------------------------------------------------------
+// set_dispute_contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_dispute_contract_rotates_and_emits_event() {
+    let f = fixture();
+    let admin = Address::generate(&f.env);
+    let old_dispute = Address::generate(&f.env);
+    let new_dispute = Address::generate(&f.env);
+    init_escrow(&f, &admin, &old_dispute);
+    assert_eq!(f.c().dispute_contract(), old_dispute);
+
+    f.c().set_dispute_contract(&new_dispute);
+
+    // Read the log before any further invocation: the test env exposes the
+    // events of recent invocations only, so a later call (the view read
+    // below) clears them.
+    let data = event_data(&f.env, "dispute_contract_updated");
+    let old_contract: Address = field(&f.env, &data, "old_contract");
+    let new_contract: Address = field(&f.env, &data, "new_contract");
+    assert_eq!(old_contract, old_dispute);
+    assert_eq!(new_contract, new_dispute);
+
+    let topic_admin: Address = event_topic1(&f.env, "dispute_contract_updated");
+    assert_eq!(topic_admin, admin, "admin is the #[topic] field");
+
+    assert_eq!(
+        f.c().dispute_contract(),
+        new_dispute,
+        "view reflects rotation"
+    );
+}
+
+#[test]
+fn set_dispute_contract_before_init_is_rejected() {
+    let f = fixture();
+    let dispute = Address::generate(&f.env);
+    let res = f.c().try_set_dispute_contract(&dispute);
+    assert!(matches!(res, Err(Ok(EscrowError::NotInitialized))));
 }
 
 // ---------------------------------------------------------------------------

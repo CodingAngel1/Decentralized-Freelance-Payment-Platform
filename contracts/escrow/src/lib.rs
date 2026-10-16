@@ -124,6 +124,18 @@ pub struct MilestonesUpdated {
     pub total_amount: i128,
 }
 
+/// Admin rotation of the dispute contract — the address authorised to call
+/// [`resolve`](EscrowContract::resolve). Emitted so a change of fund-motion
+/// authority is observable on-chain (see `docs/EVENTS.md`).
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeContractUpdated {
+    #[topic]
+    pub admin: Address,
+    pub old_contract: Address,
+    pub new_contract: Address,
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -158,10 +170,22 @@ impl EscrowContract {
             .get(&DataKey::Admin)
             .ok_or(EscrowError::NotInitialized)?;
         admin.require_auth();
+        let old_contract: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::DisputeContract)
+            .ok_or(EscrowError::NotInitialized)?;
         env.storage()
             .instance()
             .set(&DataKey::DisputeContract, &dispute_contract);
         Self::extend_instance(&env);
+
+        DisputeContractUpdated {
+            admin,
+            old_contract,
+            new_contract: dispute_contract,
+        }
+        .publish(&env);
         Ok(())
     }
 
