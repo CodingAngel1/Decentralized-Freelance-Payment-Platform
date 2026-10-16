@@ -6,6 +6,7 @@
  * Routes:
  *   /              → Dashboard (connect wallet, open a job by id)
  *   /post          → PostJob (client creates + funds a new escrow)
+ *   /activity      → Activity (earnings + open escrows for the wallet, #73)
  *   /jobs/:id      → JobDetail (milestone tracker, release + dispute)
  *   /profile/:addr → Profile (reputation score)
  */
@@ -16,6 +17,7 @@ import { useWallet } from "./hooks/wallet-context";
 import AddressField from "./components/AddressField";
 import NotificationsBell from "./components/NotificationsBell";
 import Dashboard from "./pages/Dashboard";
+import Activity from "./pages/Activity";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
 import Profile from "./pages/Profile";
@@ -26,7 +28,7 @@ function Nav() {
   return (
     <nav className="nav">
       <Link to="/">My Jobs</Link>
-      <Link to="/freelancers">Freelancers</Link>
+      <Link to="/activity">Activity</Link>
       <Link to="/post">Post a Job</Link>
       <span className="nav-spacer" style={{ display: "inline-flex", alignItems: "center" }}>
         {publicKey ? (
@@ -54,6 +56,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/freelancers" element={<FreelancerDirectory />} />
           <Route path="/post" element={<PostJob />} />
+          <Route path="/activity" element={<Activity />} />
           <Route path="/jobs/:id" element={<JobDetail />} />
           <Route path="/profile/:address" element={<Profile />} />
         </Routes>

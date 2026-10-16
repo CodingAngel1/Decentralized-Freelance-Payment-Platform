@@ -5,8 +5,9 @@
  * needs; `VITE_API_URL` configures the base URL (default localhost:3000).
  *
  * Contributor Notes:
- * - The backend indexer is still a stub, so jobs appear here only once created
- *   through the API — that is expected for now.
+ * - Jobs reach this client from the backend, whose contract-event indexer
+ *   (`backend/src/indexer.ts`) syncs chain state into the database. A job can
+ *   therefore appear here without this client having created it.
  * - `totalAmountUsdc`/`escrowId` come from Prisma and may serialize as strings.
  */
 
@@ -16,6 +17,8 @@ export interface JobListQuery {
   status?: string;
   client?: string;
   freelancer?: string;
+  /** Curated skill-tag slug (see `lib/tags.ts`); issue #70. */
+  tag?: string;
   page?: number;
   limit?: number;
 }
@@ -26,10 +29,22 @@ export function buildJobsQuery(query: JobListQuery = {}): string {
   if (query.status) params.set("status", query.status);
   if (query.client) params.set("client", query.client);
   if (query.freelancer) params.set("freelancer", query.freelancer);
+  if (query.tag) params.set("tag", query.tag);
   if (query.page !== undefined) params.set("page", String(query.page));
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   const qs = params.toString();
   return qs ? `?${qs}` : "";
+}
+
+/** A milestone row as the jobs API returns it (see the Prisma model). */
+export interface JobMilestoneApi {
+  id?: string;
+  index?: number;
+  amountUsdc: string | number;
+  description?: string | null;
+  status: string;
+  deadline?: string | null;
+  releasedAt?: string | null;
 }
 
 export interface JobApi {
@@ -40,9 +55,14 @@ export interface JobApi {
   status: string;
   /** Asset symbol the job pays in (see lib/assets.ts). */
   asset?: string;
+  /** Curated skill-tag slugs (see lib/tags.ts); issue #70. */
+  tags?: string[];
   totalAmountUsdc: string | number;
   client?: { stellarAddress: string; displayName?: string | null } | null;
   freelancer?: { stellarAddress: string } | null;
+  /** Present on the list/detail responses; used by the activity summary (#73). */
+  milestones?: JobMilestoneApi[];
+  createdAt?: string;
 }
 
 /** Fetch a page of jobs. Throws on a non-2xx response. */
@@ -76,8 +96,45 @@ export interface CreateJobInput {
   description: string;
   /** Asset symbol the job pays in; the backend stores it on the job. */
   asset: string;
+  /**
+   * Curated skill-tag slugs describing the work (see lib/tags.ts). Optional:
+   * the API defaults an absent list to none, so an older client still works.
+   */
+  tags?: string[];
   milestones: CreateJobMilestoneInput[];
   expiresAt?: string;
+}
+
+/**
+ * The caller's bookmarked jobs, most recently saved first (issue #71).
+ *
+ * Returns the same shape as `fetchJobs`, so the dashboard renders a saved job
+ * with the component it already uses for every other row.
+ */
+export async function fetchSavedJobs(token: string): Promise<JobApi[]> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/saved`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not load saved jobs (HTTP ${res.status})`);
+  return (await res.json()) as JobApi[];
+}
+
+/** Bookmark a job. Idempotent on the server, so a double click is harmless. */
+export async function saveJob(jobId: string, token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/save`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not save the job (HTTP ${res.status})`);
+}
+
+/** Remove a bookmark. Unsaving one that was never saved is not an error. */
+export async function unsaveJob(jobId: string, token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/save`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not remove the bookmark (HTTP ${res.status})`);
 }
 
 /**

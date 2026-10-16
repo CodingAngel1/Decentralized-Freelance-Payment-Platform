@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MAX_JOB_TAGS, SKILL_TAGS } from "../lib/tags";
 
 // Hoisted so the vi.mock factories below can reference them.
 const h = vi.hoisted(() => ({
@@ -28,6 +29,11 @@ vi.mock("react-router-dom", () => ({
 }));
 
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
+// Fiat estimates (#76) read an external price feed; no rate in these tests.
+vi.mock("../lib/prices", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/prices")>()),
+  getFiatRates: async () => ({}),
+}));
 vi.mock("../hooks/useEscrow", () => ({ useEscrow: () => h.escrow }));
 // Only the addresses/explorer helpers are used here; skip loading the SDK.
 vi.mock("../lib/stellar", () => ({
@@ -112,6 +118,58 @@ async function renderTotal(amounts: string[]): Promise<string> {
   });
   return screen.getByText(/^Total:/).textContent ?? "";
 }
+
+describe("PostJob skills", () => {
+  it("sends the chosen skill tags with the job it creates", async () => {
+    h.escrow.createAndFund.mockResolvedValue({ id: 1n, hash: "HASH" });
+    h.api.createJob.mockResolvedValue({ id: "job-1" });
+
+    await renderWithEnv({ VITE_XLM_CONTRACT_ID: "CXLM" });
+    fireEvent.change(screen.getByLabelText(/Title/), { target: { value: "Landing page" } });
+    fireEvent.change(screen.getByLabelText(/Description/), {
+      target: { value: "A longer description of the work" },
+    });
+    fireEvent.change(screen.getByLabelText(/Freelancer Stellar address/), {
+      target: { value: "GFREELANCER" },
+    });
+    fireEvent.change(screen.getByLabelText(/Amount #1/), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByLabelText(/Web development/));
+    fireEvent.click(screen.getByLabelText(/Smart contracts/));
+
+    fireEvent.click(screen.getByRole("button", { name: /Create & Fund Escrow/ }));
+
+    await waitFor(() => expect(h.api.createJob).toHaveBeenCalled());
+    expect(h.api.createJob.mock.calls[0][0].tags).toEqual([
+      "web-development",
+      "smart-contracts",
+    ]);
+  });
+
+  it("caps the selection at the limit the API enforces", async () => {
+    await renderWithEnv({});
+
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes).toHaveLength(SKILL_TAGS.length);
+
+    for (const box of boxes.slice(0, MAX_JOB_TAGS)) fireEvent.click(box);
+
+    expect(screen.getByText(`Skills (${MAX_JOB_TAGS}/${MAX_JOB_TAGS})`)).toBeTruthy();
+    // The remaining boxes lock, so the API can never reject the selection.
+    expect(boxes[MAX_JOB_TAGS].disabled).toBe(true);
+  });
+
+  it("unchecks a tag when it is clicked twice", async () => {
+    await renderWithEnv({});
+
+    const box = screen.getByLabelText(/Web development/) as HTMLInputElement;
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
+
+    fireEvent.click(box);
+    expect(box.checked).toBe(false);
+    expect(screen.getByText(`Skills (0/${MAX_JOB_TAGS})`)).toBeTruthy();
+  });
+});
 
 describe("PostJob total", () => {
   it("shows the exact decimal sum, not a float artefact", async () => {

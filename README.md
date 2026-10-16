@@ -72,7 +72,7 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | Testnet deployment | ✅ Deployed and initialized (ids in [`deployments/testnet.json`](./deployments/testnet.json)) |
 | Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation |
 | Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC, with a dead-letter table for events it cannot apply |
-| Job discovery / filtering | ✅ Dashboard lists jobs with status/pagination (from the backend API) |
+| Job discovery / filtering | ✅ Dashboard lists jobs with status + skill-tag filters and pagination (from the backend API) |
 | Multi-arbitrator / timelocked disputes | ✅ Panel with a timelock escape hatch from `Disputed` (see [`docs/DISPUTES.md`](./docs/DISPUTES.md)) |
 | Dispute resolution authorization | ✅ `POST /api/disputes/:id/resolve` requires an `ARBITRATOR_ADDRESSES` entry, and fails closed when unset |
 | Assets beyond USDC | ✅ Registry with USDC + XLM (`docs/ASSETS.md`); any SAC can be registered |
@@ -170,7 +170,11 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/users/auth` | — | Verify the signed message, return a JWT |
 | `GET` | `/api/users/:address` | — | Public profile |
 | `PUT` | `/api/users/me` | ✅ | Update your own profile |
-| `GET` | `/api/jobs` | — | List jobs with status filter + pagination |
+| `GET` | `/api/jobs` | — | List jobs with status + `tag` filters and pagination |
+| `GET` | `/api/jobs/tags` | — | The curated skill-tag taxonomy |
+| `GET` | `/api/jobs/saved` | ✅ | The caller's bookmarked jobs, newest first |
+| `POST` | `/api/jobs/:id/save` | ✅ | Bookmark a job (idempotent) |
+| `DELETE` | `/api/jobs/:id/save` | ✅ | Remove a bookmark |
 | `POST` | `/api/jobs` | ✅ | Create the off-chain job record |
 | `GET` | `/api/jobs/:id` | — | Job detail with milestones |
 | `PUT` | `/api/jobs/:id/assign` | ✅ | Assign a freelancer |
@@ -188,6 +192,18 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/reputation` | ✅ | Build `reputation.submit` |
 | `GET` | `/api/reputation/:address` | — | Aggregate reputation |
 
+### Skills and categories
+
+Jobs carry curated skill tags (issue #70). `backend/src/lib/tags.ts` holds the
+canonical taxonomy — 16 slugs grouped across Development, Blockchain, Data,
+Design, Content, Media and Business — and `createJobSchema` rejects anything
+outside it, de-duplicates, and caps a job at 8 tags. `GET /api/jobs/tags`
+serves the list, and `GET /api/jobs?tag=<slug>` filters with an indexed
+containment query. The frontend keeps a mirror of the same list in
+`frontend/src/lib/tags.ts` so the picker renders without a round-trip; the
+backend copy is canonical, and `backend/src/__tests__/tags.test.ts` fails if the
+two ever drift apart.
+
 Rate limiting is 100 requests/minute per IP. The **event indexer** runs
 in-process, polling Soroban RPC for the configured contracts and applying events
 to the database. Failures are recorded in `IndexerDeadLetter` rather than
@@ -199,10 +215,34 @@ React + TypeScript + Vite, with Freighter for signing.
 
 | Route | Page | Purpose |
 |-------|------|---------|
-| `/` | `Dashboard` | Filterable, paginated job list from the API |
-| `/post` | `PostJob` | Milestones + asset picker → on-chain create/fund, then the off-chain record |
+| `/` | `Dashboard` | Filterable by status and skill tag, paginated job list, plus bookmarks and a saved-only view |
+| `/post` | `PostJob` | Skill tags + milestones + asset picker → on-chain create/fund, then the off-chain record |
+| `/activity` | `Activity` | Earnings at a glance: open escrows, completed jobs, and per-asset released/still-locked totals |
 | `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
 | `/profile/:address` | `Profile` | On-chain reputation aggregate (weighted average + rating count) |
+
+A connected wallet can bookmark a job from the list and switch it to a
+saved-only view (`frontend/src/hooks/useSavedJobs.ts`); bookmarks are personal
+and off-chain, stored per user, and the toggle is idempotent on both sides.
+
+`/activity` (issue #73) answers "how much has this address been paid, and how
+much is still in escrow?" without opening each job: it reads `/api/jobs` twice
+(`?client=` and `?freelancer=`), merges the two lists by id, and totals them with
+`frontend/src/lib/activity.ts`. Totals are kept **per asset** — XLM and USDC are
+never added together — and summed in integer base units (`bigint`), so a
+total is exact rather than `0.30000000000000004`. "Released" deliberately spans
+both roles (paid out as client, earned as freelancer), with the role counts
+shown next to it, and the page states that its two reads are capped at the API's
+100-job maximum per role.
+
+`/activity` and every other screen that shows an amount also shows an
+approximate fiat figure (`frontend/src/components/FiatEstimate.tsx`, issue
+#76), sourced from CoinGecko's keyless `simple/price` feed and cached for five
+minutes (`frontend/src/lib/prices.ts`). The figure is always labelled `est.`,
+and when the feed is slow, rate-limited or down, nothing is shown at all — an
+estimate never blocks or alters the amount it sits beside. `VITE_PRICE_API_URL`
+and `VITE_PRICE_API_KEY` are optional overrides; the default needs no
+configuration.
 
 Every write shows the transaction hash and a stellar.expert link, contract errors
 are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target
@@ -220,7 +260,7 @@ and selecting one by hand is how funds reach the wrong account.
 | Wallet | Freighter browser extension (SEP-53 message signing) |
 | Backend | Express 4 + Prisma 5 + PostgreSQL, Zod validation, JWT (`jose`), Helmet, rate limiting |
 | Chain access | `@stellar/stellar-sdk` 12 (Soroban RPC + Horizon) |
-| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend, dependency vulnerability scan (advisory; `npm audit` + `cargo audit`) |
+| CI | GitHub Actions — contracts (fmt, clippy, test, wasm build), frontend, backend (typecheck, tests, and Prisma migrations applied against a Postgres service), dependency vulnerability scan (advisory; `npm audit` + `cargo audit`) |
 
 ## Repository layout
 
@@ -256,11 +296,21 @@ docker compose up --build
 | Backend | <http://localhost:3000> (`GET /health`) |
 | PostgreSQL | `localhost:5432` |
 
-Pass contract ids through the environment to bake them into the frontend image:
+Pass any `VITE_*` value through the environment to bake it into the frontend
+image — compose forwards the whole set (`VITE_NETWORK`, `VITE_API_URL`,
+`VITE_ESCROW_CONTRACT_ID`, `VITE_DISPUTE_CONTRACT_ID`,
+`VITE_REPUTATION_CONTRACT_ID`, `VITE_USDC_CONTRACT_ID`, `VITE_XLM_CONTRACT_ID`)
+as build args, so a containerised build is not stuck on `http://localhost:3000`:
 
 ```bash
-VITE_ESCROW_CONTRACT_ID=C... docker compose up --build
+VITE_API_URL=https://api.example.com \
+VITE_ESCROW_CONTRACT_ID=C... \
+VITE_XLM_CONTRACT_ID=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  docker compose up --build
 ```
+
+These are the same variables as the [Frontend configuration](#frontend-frontendenv)
+table below; Vite inlines them, so changing one means rebuilding the image.
 
 ### Manual
 
@@ -284,8 +334,9 @@ Deploy and exercise the contracts on testnet:
 
 ```bash
 stellar keys generate deployer --network testnet --fund
-scripts/deploy_testnet.sh     # builds, deploys, initializes, records ids
-scripts/demo_testnet.sh       # create → fund → release → rate → aggregate
+scripts/deploy_testnet.sh         # builds, deploys, initializes, records ids
+scripts/demo_testnet.sh           # create → fund → release → rate → aggregate
+scripts/demo_dispute_testnet.sh   # open_dispute → raise → approve → arbitrate
 ```
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for conventions and the manual setup in full.
@@ -351,7 +402,9 @@ npm test
 npm run build
 ```
 
-CI runs all three on every push and pull request to `main`
+CI runs all three on every push and pull request to `main` and
+`integration/staging`, and applies the backend's Prisma migrations against a
+Postgres service so a broken or drifted migration fails the build
 ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)).
 
 ## Deployment

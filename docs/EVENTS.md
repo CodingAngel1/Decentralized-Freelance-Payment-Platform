@@ -29,6 +29,7 @@ and, if desired, a second topic for the id/address in the `#[topic]` field.
 | `Resolved` | `resolved` | `escrow_id: u64` | `client_share: i128`, `freelancer_share: i128` |
 | `Refunded` | `refunded` | `escrow_id: u64` | `client: Address`, `amount: i128` |
 | `MilestonesUpdated` | `milestones_updated` | `escrow_id: u64` | `count: u32`, `total_amount: i128` |
+| `DisputeContractUpdated` | `dispute_contract_updated` | `admin: Address` | `old_contract: Address`, `new_contract: Address` |
 
 ## Dispute — `contracts/dispute`
 

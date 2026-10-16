@@ -13,7 +13,8 @@
  *
  * Events handled (see docs/EVENTS.md):
  *   escrow     — created, funded, milestones_updated, milestone_released,
- *                dispute_opened, resolved, refunded
+ *                dispute_opened, resolved, refunded,
+ *                dispute_contract_updated (recognized; no job state to update)
  *   dispute    — raised, approved, dispute_resolved
  *   reputation — rated
  *
@@ -334,7 +335,10 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
       await handleRated(data);
       break;
     default:
-      // milestones_updated / approved do not change indexed job state.
+      // milestones_updated / approved / dispute_contract_updated do not
+      // change indexed job state — dispute_contract_updated is an admin
+      // contract-config rotation (audited on-chain via getEvents), and no
+      // Job row is affected by it.
       break;
   }
 }

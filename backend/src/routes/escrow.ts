@@ -47,7 +47,22 @@ const server = new SorobanRpc.Server(config.SOROBAN_RPC_URL);
 const networkPassphrase =
   config.STELLAR_NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 
-async function buildTx(sourceAddress: string, operation: xdr.Operation): Promise<string> {
+/**
+ * An on-chain escrow id: the `u64` the escrow contract assigns in `next_id`,
+ * which is zero-based (the first escrow is id 0 — see
+ * `contracts/escrow/src/test.rs`).
+ *
+ * `z.number()` on its own also accepts `1.5`, which then reaches `BigInt(...)`
+ * and throws a `RangeError` that the error handler reports as a 500. `.int()`
+ * rejects a fraction and `.nonnegative()` rejects a negative id, so a malformed
+ * id fails validation as a 400 instead of an internal error (issue #49).
+ *
+ * `.positive()` is deliberately not used: escrow ids start at 0, so requiring a
+ * strictly positive id would 400 the first escrow the contract ever creates.
+ */
+const escrowIdSchema = z.number().int().nonnegative();
+
+async function buildTx(sourceAddress: string, operation: any): Promise<string> {
   const account = await server.getAccount(sourceAddress);
   const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase })
     .addOperation(operation)
@@ -151,7 +166,7 @@ const editableMilestoneSchema = z.object({
 // encodes them exactly like `build/create`, so both paths produce identical
 // arguments for the same edit.
 const updateMilestonesSchema = z.object({
-  escrowId: z.number().int().nonnegative(),
+  escrowId: escrowIdSchema,
   milestones: z.array(editableMilestoneSchema).min(1),
 });
 
@@ -251,7 +266,7 @@ escrowRouter.put(
 );
 
 // POST /api/escrow/build/fund
-escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: z.number() })), async (req, res, next) => {
+escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: escrowIdSchema })), async (req, res, next) => {
   try {
     const contract = new Contract(config.ESCROW_CONTRACT_ID);
     const xdr = await buildTx(
@@ -265,7 +280,7 @@ escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: z.nu
 });
 
 // POST /api/escrow/build/release
-const releaseSchema = z.object({ escrowId: z.number(), milestoneIndex: z.number().int().min(0) });
+const releaseSchema = z.object({ escrowId: escrowIdSchema, milestoneIndex: z.number().int().min(0) });
 
 escrowRouter.post("/build/release", requireAuth, validate(releaseSchema), async (req, res, next) => {
   try {
@@ -285,7 +300,7 @@ escrowRouter.post("/build/release", requireAuth, validate(releaseSchema), async 
 });
 
 // POST /api/escrow/build/reclaim
-escrowRouter.post("/build/reclaim", requireAuth, validate(z.object({ escrowId: z.number() })), async (req, res, next) => {
+escrowRouter.post("/build/reclaim", requireAuth, validate(z.object({ escrowId: escrowIdSchema })), async (req, res, next) => {
   try {
     const contract = new Contract(config.ESCROW_CONTRACT_ID);
     const xdr = await buildTx(
@@ -309,7 +324,7 @@ escrowRouter.post("/build/reclaim", requireAuth, validate(z.object({ escrowId: z
 escrowRouter.post(
   "/build/reclaim-dispute",
   requireAuth,
-  validate(z.object({ escrowId: z.number() })),
+  validate(z.object({ escrowId: escrowIdSchema })),
   async (req, res, next) => {
     try {
       const contract = new Contract(config.ESCROW_CONTRACT_ID);
@@ -328,7 +343,7 @@ escrowRouter.post(
 );
 
 // POST /api/escrow/sync/:jobId — called by frontend after tx confirmed
-const syncSchema = z.object({ escrowId: z.number() });
+const syncSchema = z.object({ escrowId: escrowIdSchema });
 
 escrowRouter.post("/sync/:jobId", requireAuth, validate(syncSchema), async (req, res, next) => {
   try {
