@@ -217,12 +217,23 @@ React + TypeScript + Vite, with Freighter for signing.
 |-------|------|---------|
 | `/` | `Dashboard` | Filterable by status and skill tag, paginated job list, plus bookmarks and a saved-only view |
 | `/post` | `PostJob` | Skill tags + milestones + asset picker → on-chain create/fund, then the off-chain record |
+| `/activity` | `Activity` | Earnings at a glance: open escrows, completed jobs, and per-asset released/still-locked totals |
 | `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
 | `/profile/:address` | `Profile` | On-chain reputation aggregate (weighted average + rating count) |
 
 A connected wallet can bookmark a job from the list and switch it to a
 saved-only view (`frontend/src/hooks/useSavedJobs.ts`); bookmarks are personal
 and off-chain, stored per user, and the toggle is idempotent on both sides.
+
+`/activity` (issue #73) answers "how much has this address been paid, and how
+much is still in escrow?" without opening each job: it reads `/api/jobs` twice
+(`?client=` and `?freelancer=`), merges the two lists by id, and totals them with
+`frontend/src/lib/activity.ts`. Totals are kept **per asset** — XLM and USDC are
+never added together — and summed in integer base units (`bigint`), so a
+total is exact rather than `0.30000000000000004`. "Released" deliberately spans
+both roles (paid out as client, earned as freelancer), with the role counts
+shown next to it, and the page states that its two reads are capped at the API's
+100-job maximum per role.
 
 Every write shows the transaction hash and a stellar.expert link, contract errors
 are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target
