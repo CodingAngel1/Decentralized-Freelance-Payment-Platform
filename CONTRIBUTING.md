@@ -221,6 +221,18 @@ That is exactly what CI runs. The test steps are not optional: the frontend
 suite no longer passes `--passWithNoTests`, so a broken or emptied suite fails
 the build instead of reporting success on nothing.
 
+With a Postgres reachable at `DATABASE_URL` (CI starts one as a service), also
+confirm the committed migrations still apply and reproduce `schema.prisma` — the
+same two steps the backend CI job runs, and the ones `backend/Dockerfile` runs
+at container start:
+
+```bash
+cd backend
+npx prisma migrate deploy
+npx prisma migrate diff --from-url "$DATABASE_URL" \
+  --to-schema-datamodel prisma/schema.prisma --exit-code
+```
+
 ---
 
 ## Conventions
@@ -248,8 +260,33 @@ the build instead of reporting success on nothing.
   `docs/short-description`.
 - Small, focused commits with imperative messages
   (`feat(escrow): reject zero-amount milestones`).
-- Open a PR against `main`; fill in the PR template and link the issue.
+- Open a PR against `integration/staging` (the integration branch that is
+  promoted to `main`); fill in the PR template and link the issue.
 - CI must be green before review.
+
+### CI workflows
+
+`.github/workflows/ci.yml` runs with the repository's `GITHUB_TOKEN` on every
+push to `main` and on every PR, so anything added to it follows two rules.
+`backend/src/__tests__/ciWorkflows.test.ts` enforces both.
+
+- **Pin every action to a full 40-character commit SHA**, with the version in a
+  trailing comment (`uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0`).
+  Tags (`@v4`) and branches (`@stable`) can be re-pointed by their owner, which
+  would run unreviewed code holding the workflow's token. Actions that derive
+  their behaviour from the ref they are invoked at must be told it explicitly
+  once pinned: `stellar/stellar-cli` takes `with: version: v…`,
+  `dtolnay/rust-toolchain` takes `with: toolchain: …`. Local actions (`./path`,
+  executed from the checkout) and `docker://image@sha256:…` digests are the only
+  accepted exceptions. Bump a pin by moving the SHA and its comment together —
+  version bumps stay manual (see [Dependency security](#dependency-security)).
+- **Scope the token to what CI uses**: the workflow declares
+  `permissions: contents: read` — all the jobs need is checkout, toolchains,
+  npm/cargo and the cache. If a step ever needs more, widen it in that job's
+  `permissions:` block, restating `contents: read`, because a job-level block
+  replaces the workflow-level one. (The `contracts` job is the one current
+  example: `attestations: read` for the stellar-cli action's
+  `gh attestation verify`.)
 
 ---
 

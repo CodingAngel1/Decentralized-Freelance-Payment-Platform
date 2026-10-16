@@ -13,6 +13,9 @@
  *   contracts keep them separate on purpose.
  * - In-flight operations are tracked per target (kind + key), so unrelated
  *   buttons stay enabled and a target cannot be submitted twice.
+ * - Every write reports its lifecycle through `useToasts` (building → signing →
+ *   confirmed / failed) so feedback survives navigation, and a failure carries
+ *   the same mapped contract-error message the inline error shows (issue #60).
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -32,6 +35,7 @@ import {
   type MilestoneInput,
 } from "../lib/stellar";
 import { friendlyError, parseContractErrorCode } from "../lib/errors";
+import { useToasts } from "./toast-context";
 import { useWallet } from "./wallet-context";
 
 export interface MilestoneView {
@@ -106,6 +110,7 @@ export interface FailureInfo {
 
 export function useEscrow() {
   const { publicKey, connect, sign } = useWallet();
+  const { start: startToast, update: updateToast } = useToasts();
   const [pendingOps, setPendingOps] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lastFailure, setLastFailure] = useState<FailureInfo | null>(null);
@@ -169,6 +174,12 @@ export function useEscrow() {
   /**
    * Submit a state-changing contract call. Returns the transaction hash and the
    * decoded return value so callers can link to the explorer.
+   *
+   * The transaction's progress is reported as one toast that advances in place,
+   * so the three stages the user cares about — building, waiting for the wallet
+   * to sign, and the outcome — appear without stacking up. On failure the toast
+   * carries the mapped contract-error message (the same one the inline error
+   * shows) and the error still propagates to `run`.
    */
   const submit = useCallback(
     async (
@@ -176,22 +187,31 @@ export function useEscrow() {
       contractId: string,
       method: string,
       args: xdr.ScVal[],
+      label: string,
     ): Promise<SubmitResult> => {
-      const built = await buildContractCall(pk, contractId, method, args);
-      const signed = await sign(built.xdr);
-      const tx = TransactionBuilder.fromXDR(signed, networkPassphrase);
-      const sent = await server.sendTransaction(tx);
-      if (sent.status === "ERROR") {
-        throw new Error(`Transaction rejected: ${JSON.stringify(sent.errorResult)}`);
+      const toastId = startToast(`Building ${label} transaction…`);
+      try {
+        const built = await buildContractCall(pk, contractId, method, args);
+        updateToast(toastId, "signing", `Awaiting signature for ${label}…`);
+        const signed = await sign(built.xdr);
+        const tx = TransactionBuilder.fromXDR(signed, networkPassphrase);
+        const sent = await server.sendTransaction(tx);
+        if (sent.status === "ERROR") {
+          throw new Error(`Transaction rejected: ${JSON.stringify(sent.errorResult)}`);
+        }
+        const receipt = await pollTransaction(sent.hash);
+        if (receipt.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+          throw new Error(`Transaction ${sent.hash} failed (${receipt.status})`);
+        }
+        updateToast(toastId, "confirmed", `${label} confirmed`, sent.hash);
+        // The return value does not survive submission, so use the simulated one.
+        return { hash: sent.hash, result: built.result };
+      } catch (e) {
+        updateToast(toastId, "failed", friendlyError(e));
+        throw e;
       }
-      const receipt = await pollTransaction(sent.hash);
-      if (receipt.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
-        throw new Error(`Transaction ${sent.hash} failed (${receipt.status})`);
-      }
-      // The return value does not survive submission, so use the simulated one.
-      return { hash: sent.hash, result: built.result };
     },
-    [sign],
+    [sign, startToast, updateToast],
   );
 
   /**
@@ -208,9 +228,9 @@ export function useEscrow() {
           scAddress(token),
           milestonesToScVal(milestones),
           scU64(expiry),
-        ]);
+        ], "create escrow");
         const id = BigInt(created.result as bigint | number | string);
-        const funded = await submit(pk, escrow, "fund", [scU64(id)]);
+        const funded = await submit(pk, escrow, "fund", [scU64(id)], "fund escrow");
         return { id, hash: funded.hash };
       }),
     [run, submit],
@@ -223,7 +243,7 @@ export function useEscrow() {
         submit(pk, CONTRACT_ADDRESSES.escrow, "release_milestone", [
           scU64(escrowId),
           scU32(milestoneIndex),
-        ]),
+        ], "release milestone"),
       ),
     [run, submit],
   );
@@ -252,13 +272,13 @@ export function useEscrow() {
         await submit(pk, CONTRACT_ADDRESSES.escrow, "open_dispute", [
           scU64(escrowId),
           scAddress(pk),
-        ]);
+        ], "open dispute");
         const raised = await submit(pk, CONTRACT_ADDRESSES.dispute, "raise", [
           scU64(escrowId),
           scAddress(CONTRACT_ADDRESSES.escrow),
           scAddress(pk),
           scString(reason),
-        ]);
+        ], "raise dispute");
         // The id comes from the simulation of the call that was just submitted:
         // the contract's return value does not survive submission, and it is the
         // only way to learn the id without waiting for the indexer to see the
@@ -286,7 +306,7 @@ export function useEscrow() {
       run("reclaim", `${escrowId}`, (pk) =>
         submit(pk, CONTRACT_ADDRESSES.escrow, "reclaim_after_dispute_timeout", [
           scU64(escrowId),
-        ]),
+        ], "reclaim funds"),
       ),
     [run, submit],
   );
@@ -307,7 +327,7 @@ export function useEscrow() {
           scAddress(ratee),
           scU64(escrowId),
           scU32(score),
-        ]),
+        ], "submit rating"),
       ),
     [run, submit],
   );

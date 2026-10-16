@@ -1,12 +1,13 @@
 /**
  * schemas.ts
  *
- * Request schemas for the job-creation API, extracted from the route file so
- * the validation rules are unit testable without a database, config or a
- * running server (see `__tests__/app.test.ts`).
+ * Request schemas for the jobs API, extracted from the route file so the
+ * validation rules are unit testable without a database, config or a running
+ * server (see `__tests__/app.test.ts`).
  */
 
 import { z } from "zod";
+import { isSkillTag, MAX_JOB_TAGS, SKILL_TAG_SLUGS } from "./tags";
 
 /**
  * A milestone amount: a positive number, or a positive decimal string.
@@ -29,6 +30,20 @@ export const milestoneSchema = z.object({
   deadline: z.string().datetime().optional(),
 });
 
+/**
+ * A job's skill tags: curated slugs from `lib/tags.ts`, de-duplicated and
+ * capped. Defaults to none, so existing clients keep working unchanged.
+ */
+export const jobTagsSchema = z
+  .array(
+    z
+      .string()
+      .refine(isSkillTag, `Tags must be one of: ${SKILL_TAG_SLUGS.join(", ")}`),
+  )
+  .max(MAX_JOB_TAGS)
+  .default([])
+  .transform((tags) => [...new Set(tags)]);
+
 export const createJobSchema = z.object({
   title: z.string().min(3).max(120),
   description: z.string().min(10),
@@ -36,18 +51,13 @@ export const createJobSchema = z.object({
   expiresAt: z.string().datetime().optional(),
   /** Asset symbol the job pays in; must be in the registry. Defaults to USDC. */
   asset: z.string().default("USDC"),
+  /** Curated skill tags describing the work (issue #70). */
+  tags: jobTagsSchema,
 });
 
-export const createProposalSchema = z.object({
-  coverLetter: z.string().min(5).max(3000).optional(),
-  proposedRate: amountUsdcSchema.optional(),
-});
-
-export const createDeliverableSchema = z.object({
-  fileName: z.string().min(1).max(255),
-  fileUrl: z.string().min(1),
-  fileSize: z.number().int().nonnegative().optional(),
-  fileType: z.string().max(100).optional(),
-  description: z.string().max(2000).optional(),
+export const assignJobSchema = z.object({
+  freelancerAddress: z
+    .string()
+    .refine(isValidStellarAddress, "Invalid Stellar address"),
 });
 

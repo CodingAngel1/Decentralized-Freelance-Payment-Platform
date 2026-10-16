@@ -37,6 +37,10 @@ const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
 const TTL_EXTEND_TO: u32 = 90 * DAY_IN_LEDGERS;
 /// Seconds after a dispute is opened before the client can reclaim.
 const DISPUTE_TIMEOUT_SECONDS: u64 = 7 * 24 * 60 * 60;
+/// Maximum number of milestones per escrow. Keeps every loop within the
+/// Soroban CPU budget and prevents `resolve`/`remaining` from being blocked
+/// by an unbounded list. Must match the cap enforced by the frontend.
+pub const MAX_MILESTONES: u32 = 20;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -120,6 +124,18 @@ pub struct MilestonesUpdated {
     pub total_amount: i128,
 }
 
+/// Admin rotation of the dispute contract — the address authorised to call
+/// [`resolve`](EscrowContract::resolve). Emitted so a change of fund-motion
+/// authority is observable on-chain (see `docs/EVENTS.md`).
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeContractUpdated {
+    #[topic]
+    pub admin: Address,
+    pub old_contract: Address,
+    pub new_contract: Address,
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -154,10 +170,22 @@ impl EscrowContract {
             .get(&DataKey::Admin)
             .ok_or(EscrowError::NotInitialized)?;
         admin.require_auth();
+        let old_contract: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::DisputeContract)
+            .ok_or(EscrowError::NotInitialized)?;
         env.storage()
             .instance()
             .set(&DataKey::DisputeContract, &dispute_contract);
         Self::extend_instance(&env);
+
+        DisputeContractUpdated {
+            admin,
+            old_contract,
+            new_contract: dispute_contract,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -183,6 +211,9 @@ impl EscrowContract {
 
         if milestones.is_empty() {
             return Err(EscrowError::InvalidMilestones);
+        }
+        if milestones.len() > MAX_MILESTONES {
+            return Err(EscrowError::TooManyMilestones);
         }
         if client == freelancer {
             return Err(EscrowError::InvalidCounterparty);
@@ -243,6 +274,9 @@ impl EscrowContract {
         }
         if milestones.is_empty() {
             return Err(EscrowError::InvalidMilestones);
+        }
+        if milestones.len() > MAX_MILESTONES {
+            return Err(EscrowError::TooManyMilestones);
         }
 
         let mut total_amount: i128 = 0;
@@ -544,7 +578,10 @@ impl EscrowContract {
 
         // Effects before interaction: mark every milestone fully released and complete.
         for i in 0..escrow.milestones.len() {
-            let mut m = escrow.milestones.get(i).unwrap();
+            let mut m = escrow
+                .milestones
+                .get(i)
+                .ok_or(EscrowError::MilestoneIndexOutOfBounds)?;
             m.released = true;
             m.released_amount = m.amount;
             escrow.milestones.set(i, m);

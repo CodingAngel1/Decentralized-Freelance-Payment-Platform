@@ -48,6 +48,19 @@ export function toBaseUnits(amount: number | string, decimals: number): bigint {
 }
 
 /**
+ * The inverse of `toBaseUnits`, as a string for `Decimal` columns (Prisma
+ * accepts a numeric string for a `Decimal` field, and a string cannot lose
+ * precision the way a JS number can). Trailing zeros are trimmed, so
+ * `10_000_000n` at 7 decimals is `"1"`, not `"1.0000000"`.
+ */
+export function fromBaseUnits(base: bigint, decimals: number): string {
+  const negative = base < 0n;
+  const digits = (negative ? -base : base).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals) || "0";
+  const fraction =
+    decimals > 0 ? digits.slice(digits.length - decimals).replace(/0+$/, "") : "";
+  const value = fraction ? `${whole}.${fraction}` : whole;
+  return negative ? `-${value}` : value;
  * Sum decimal amounts exactly, returning the total in the asset's integer base
  * units.
  *
@@ -58,6 +71,31 @@ export function toBaseUnits(amount: number | string, decimals: number): bigint {
  */
 export function sumAmounts(amounts: Array<number | string>, decimals: number): bigint {
   return amounts.reduce<bigint>((total, amount) => total + toBaseUnits(amount, decimals), 0n);
+}
+
+/**
+ * Render an integer base-unit amount as whole units for an asset symbol.
+ *
+ * Event amounts are stored in base units (stroops) because that is what the
+ * contracts emit; a client shows whole units. An unregistered symbol falls back
+ * to the raw value rather than guessing decimal places.
+ */
+export function formatBaseUnitsForAsset(
+  base: string | number | bigint,
+  symbol: string | null | undefined,
+): string {
+  if (!symbol) return String(base);
+  let decimals: number;
+  try {
+    decimals = getAsset(symbol).decimals;
+  } catch {
+    return String(base);
+  }
+  try {
+    return formatAmount(typeof base === "bigint" ? base : BigInt(base), decimals);
+  } catch {
+    return String(base);
+  }
 }
 
 /**

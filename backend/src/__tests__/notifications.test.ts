@@ -1,151 +1,288 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import {
-  EmailProvider,
-  EmailMessage,
-  LoggingEmailProvider,
-  getEmailProvider,
-  setEmailProvider,
-  notifyDisputeOpened,
-  notifyMilestoneReleased,
-  notifyEscrowRefunded,
-  NotificationJob,
-} from "../lib/notifications";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import express from "express";
+import type { Server } from "node:http";
+import { SignJWT } from "jose";
 
-class TestEmailProvider implements EmailProvider {
-  public sent: EmailMessage[] = [];
-  async sendEmail(message: EmailMessage): Promise<void> {
-    this.sent.push(message);
-  }
+const JWT_SECRET = "test-secret-at-least-32-chars-long-for-tests";
+process.env.JWT_SECRET = JWT_SECRET;
+process.env.DATABASE_URL = "postgresql://unused:unused@localhost:5432/unused";
+
+interface FakeUser {
+  id: string;
+  stellarAddress: string;
 }
 
-describe("Email Notifications System (Issue #67)", () => {
-  let testProvider: TestEmailProvider;
+interface FakeNotification {
+  id: string;
+  userId: string;
+  jobId: string | null;
+  type: "FUNDED" | "RELEASED" | "DISPUTED" | "RESOLVED";
+  title: string;
+  message: string;
+  read: boolean;
+  createdAt: Date;
+}
 
-  beforeEach(() => {
-    testProvider = new TestEmailProvider();
-    setEmailProvider(testProvider);
+const fakeUsers: FakeUser[] = [];
+const fakeNotifications: FakeNotification[] = [];
+
+vi.mock("../db", () => {
+  return {
+    prisma: {
+      user: {
+        findUnique: vi.fn(async ({ where }: { where: { stellarAddress?: string; id?: string } }) => {
+          if (where.stellarAddress) {
+            return fakeUsers.find((u) => u.stellarAddress === where.stellarAddress) ?? null;
+          }
+          if (where.id) {
+            return fakeUsers.find((u) => u.id === where.id) ?? null;
+          }
+          return null;
+        }),
+      },
+      notification: {
+        findMany: vi.fn(async ({ where }: { where: { userId: string; read?: boolean } }) => {
+          return fakeNotifications.filter((n) => {
+            if (n.userId !== where.userId) return false;
+            if (where.read !== undefined && n.read !== where.read) return false;
+            return true;
+          });
+        }),
+        count: vi.fn(async ({ where }: { where: { userId: string; read?: boolean } }) => {
+          return fakeNotifications.filter((n) => {
+            if (n.userId !== where.userId) return false;
+            if (where.read !== undefined && n.read !== where.read) return false;
+            return true;
+          }).length;
+        }),
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+          return fakeNotifications.find((n) => n.id === where.id) ?? null;
+        }),
+        update: vi.fn(async ({ where, data }: { where: { id: string }; data: { read: boolean } }) => {
+          const notif = fakeNotifications.find((n) => n.id === where.id);
+          if (notif) notif.read = data.read;
+          return notif;
+        }),
+        updateMany: vi.fn(async ({ where, data }: { where: { userId: string; read?: boolean }; data: { read: boolean } }) => {
+          let count = 0;
+          for (const n of fakeNotifications) {
+            if (n.userId === where.userId && (where.read === undefined || n.read === where.read)) {
+              n.read = data.read;
+              count++;
+            }
+          }
+          return { count };
+        }),
+        create: vi.fn(async ({ data }: { data: Omit<FakeNotification, "id" | "createdAt" | "read"> }) => {
+          const notif: FakeNotification = {
+            id: `notif-${fakeNotifications.length + 1}`,
+            read: false,
+            createdAt: new Date(),
+            ...data,
+          };
+          fakeNotifications.push(notif);
+          return notif;
+        }),
+      },
+      job: {
+        findUnique: vi.fn(async () => null),
+        updateMany: vi.fn(async () => ({ count: 1 })),
+        update: vi.fn(async () => ({})),
+      },
+      dispute: {
+        updateMany: vi.fn(async () => ({ count: 1 })),
+      },
+    },
+  };
+});
+
+let baseUrl: string;
+let server: Server;
+
+beforeAll(async () => {
+  const { notificationsRouter } = await import("../routes/notifications");
+  const { errorHandler } = await import("../middleware/errorHandler");
+
+  const app = express();
+  app.use(express.json());
+  app.use("/api/notifications", notificationsRouter);
+  app.use(errorHandler);
+
+  await new Promise<void>((resolve) => {
+    server = app.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("no port assigned");
+  baseUrl = `http://127.0.0.1:${address.port}`;
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve, reject) =>
+    server.close((err) => (err ? reject(err) : resolve())),
+  );
+});
+
+beforeEach(() => {
+  fakeUsers.length = 0;
+  fakeNotifications.length = 0;
+});
+
+async function makeToken(address: string): Promise<string> {
+  const secret = new TextEncoder().encode(JWT_SECRET);
+  return new SignJWT({ sub: address })
+    .setProtectedHeader({ alg: "HS256" })
+    .setExpirationTime("1h")
+    .sign(secret);
+}
+
+describe("Notifications API (#66)", () => {
+  it("rejects unauthenticated requests with 401", async () => {
+    const res = await fetch(`${baseUrl}/api/notifications`);
+    expect(res.status).toBe(401);
   });
 
-  describe("Provider abstraction", () => {
-    it("falls back to LoggingEmailProvider in development by default", async () => {
-      const loggingProvider = new LoggingEmailProvider();
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-
-      await loggingProvider.sendEmail({
-        to: "alice@example.com",
-        subject: "Test Subject",
-        text: "Test content",
-      });
-
-      expect(loggingProvider.sentEmails).toHaveLength(1);
-      expect(loggingProvider.sentEmails[0].to).toBe("alice@example.com");
-      expect(consoleSpy).toHaveBeenCalled();
-      consoleSpy.mockRestore();
+  it("returns notifications and unreadCount for the authenticated user", async () => {
+    const user: FakeUser = {
+      id: "u1",
+      stellarAddress: "GBTESTUSER11111111111111111111111111111111111111111111111",
+    };
+    fakeUsers.push(user);
+    fakeNotifications.push({
+      id: "n1",
+      userId: "u1",
+      jobId: "job-1",
+      type: "FUNDED",
+      title: "Escrow Funded",
+      message: "Escrow has been funded.",
+      read: false,
+      createdAt: new Date(),
+    });
+    fakeNotifications.push({
+      id: "n2",
+      userId: "u1",
+      jobId: "job-1",
+      type: "RELEASED",
+      title: "Milestone Released",
+      message: "Milestone 1 released.",
+      read: true,
+      createdAt: new Date(),
+    });
+    // Another user's notification should not leak
+    fakeNotifications.push({
+      id: "n3",
+      userId: "u2",
+      jobId: "job-2",
+      type: "DISPUTED",
+      title: "Dispute Opened",
+      message: "Dispute opened.",
+      read: false,
+      createdAt: new Date(),
     });
 
-    it("allows registering a custom email provider", () => {
-      expect(getEmailProvider()).toBe(testProvider);
+    const token = await makeToken(user.stellarAddress);
+    const res = await fetch(`${baseUrl}/api/notifications`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications: FakeNotification[];
+      unreadCount: number;
+    };
+    expect(body.notifications).toHaveLength(2);
+    expect(body.unreadCount).toBe(1);
+    expect(body.notifications[0]?.title).toBe("Escrow Funded");
   });
 
-  describe("notifyDisputeOpened", () => {
-    it("sends emails only to participants with email and notifyOnDispute enabled", async () => {
-      const job: NotificationJob = {
-        id: "job_1",
-        title: "Frontend Redesign",
-        client: {
-          stellarAddress: "GCLIENT",
-          email: "client@example.com",
-          notifyOnDispute: true,
-        },
-        freelancer: {
-          stellarAddress: "GFREELANCER",
-          email: "freelancer@example.com",
-          notifyOnDispute: false, // Opted out
-        },
-      };
-
-      await notifyDisputeOpened(job, { reason: "Work was not delivered on time" });
-
-      expect(testProvider.sent).toHaveLength(1);
-      expect(testProvider.sent[0].to).toBe("client@example.com");
-      expect(testProvider.sent[0].subject).toContain("Dispute Opened: Frontend Redesign");
-      expect(testProvider.sent[0].text).toContain("Work was not delivered on time");
+  it("marks a single notification as read", async () => {
+    const user: FakeUser = {
+      id: "u1",
+      stellarAddress: "GBTESTUSER11111111111111111111111111111111111111111111111",
+    };
+    fakeUsers.push(user);
+    fakeNotifications.push({
+      id: "n1",
+      userId: "u1",
+      jobId: "job-1",
+      type: "DISPUTED",
+      title: "Dispute Opened",
+      message: "Dispute opened.",
+      read: false,
+      createdAt: new Date(),
     });
 
-    it("does not send emails if no participants have opted in", async () => {
-      const job: NotificationJob = {
-        id: "job_1",
-        title: "Frontend Redesign",
-        client: {
-          stellarAddress: "GCLIENT",
-          email: "client@example.com",
-          notifyOnDispute: false,
-        },
-        freelancer: {
-          stellarAddress: "GFREELANCER",
-          email: null,
-          notifyOnDispute: true,
-        },
-      };
-
-      await notifyDisputeOpened(job);
-
-      expect(testProvider.sent).toHaveLength(0);
+    const token = await makeToken(user.stellarAddress);
+    const res = await fetch(`${baseUrl}/api/notifications/n1/read`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
     });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as FakeNotification;
+    expect(body.read).toBe(true);
+    expect(fakeNotifications[0]?.read).toBe(true);
   });
 
-  describe("notifyMilestoneReleased", () => {
-    it("sends emails only to participants with email and notifyOnRelease enabled", async () => {
-      const job: NotificationJob = {
-        id: "job_2",
-        title: "Backend API",
-        client: {
-          stellarAddress: "GCLIENT",
-          email: "client@example.com",
-          notifyOnRelease: false,
-        },
-        freelancer: {
-          stellarAddress: "GFREELANCER",
-          email: "freelancer@example.com",
-          notifyOnRelease: true,
-        },
-      };
-
-      await notifyMilestoneReleased(job, { index: 1, amountUsdc: "150.00" });
-
-      expect(testProvider.sent).toHaveLength(1);
-      expect(testProvider.sent[0].to).toBe("freelancer@example.com");
-      expect(testProvider.sent[0].subject).toContain("Milestone Released: Backend API");
-      expect(testProvider.sent[0].text).toContain("Milestone #2");
-      expect(testProvider.sent[0].text).toContain("Amount: 150.00");
+  it("rejects marking another user's notification as read with 404", async () => {
+    const user: FakeUser = {
+      id: "u1",
+      stellarAddress: "GBTESTUSER11111111111111111111111111111111111111111111111",
+    };
+    fakeUsers.push(user);
+    fakeNotifications.push({
+      id: "n2",
+      userId: "u2", // belongs to u2
+      jobId: "job-1",
+      type: "RESOLVED",
+      title: "Dispute Resolved",
+      message: "Resolved.",
+      read: false,
+      createdAt: new Date(),
     });
+
+    const token = await makeToken(user.stellarAddress);
+    const res = await fetch(`${baseUrl}/api/notifications/n2/read`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(404);
   });
 
-  describe("notifyEscrowRefunded", () => {
-    it("sends emails only to participants with email and notifyOnRefund enabled", async () => {
-      const job: NotificationJob = {
-        id: "job_3",
-        title: "Logo Design",
-        client: {
-          stellarAddress: "GCLIENT",
-          email: "client@example.com",
-          notifyOnRefund: true,
-        },
-        freelancer: {
-          stellarAddress: "GFREELANCER",
-          email: "freelancer@example.com",
-          notifyOnRefund: true,
-        },
-      };
+  it("marks all notifications as read for the user", async () => {
+    const user: FakeUser = {
+      id: "u1",
+      stellarAddress: "GBTESTUSER11111111111111111111111111111111111111111111111",
+    };
+    fakeUsers.push(user);
+    fakeNotifications.push(
+      {
+        id: "n1",
+        userId: "u1",
+        jobId: "j1",
+        type: "FUNDED",
+        title: "T1",
+        message: "M1",
+        read: false,
+        createdAt: new Date(),
+      },
+      {
+        id: "n2",
+        userId: "u1",
+        jobId: "j2",
+        type: "RESOLVED",
+        title: "T2",
+        message: "M2",
+        read: false,
+        createdAt: new Date(),
+      },
+    );
 
-      await notifyEscrowRefunded(job, { reason: "Dispute timeout reached" });
-
-      expect(testProvider.sent).toHaveLength(2);
-      expect(testProvider.sent[0].to).toBe("client@example.com");
-      expect(testProvider.sent[1].to).toBe("freelancer@example.com");
-      expect(testProvider.sent[0].subject).toContain("Escrow Refunded: Logo Design");
-      expect(testProvider.sent[0].text).toContain("Dispute timeout reached");
+    const token = await makeToken(user.stellarAddress);
+    const res = await fetch(`${baseUrl}/api/notifications/read-all`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}` },
     });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+    expect(fakeNotifications.every((n) => n.read)).toBe(true);
   });
 });

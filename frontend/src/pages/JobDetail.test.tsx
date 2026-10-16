@@ -27,6 +27,10 @@ const h = vi.hoisted(() => ({
   recordRating: vi.fn(async () => ({ rating: {}, xdr: "x" })),
   createDispute: vi.fn(),
   linkDisputeId: vi.fn(),
+  // Mounted for a participant once the escrow id resolves to a job id (#64).
+  fetchMessages: vi.fn(async () => [] as unknown[]),
+  sendMessage: vi.fn(),
+  markMessagesRead: vi.fn(async () => 0),
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -37,6 +41,11 @@ vi.mock("react-router-dom", () => ({
 }));
 
 vi.mock("../hooks/wallet-context", () => ({ useWallet: () => h.wallet }));
+// Fiat estimates (#76) read an external price feed; no rate in these tests.
+vi.mock("../lib/prices", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/prices")>()),
+  getFiatRates: async () => ({}),
+}));
 vi.mock("../hooks/useEscrow", () => ({ useEscrow: () => h.escrow }));
 vi.mock("../lib/stellar", () => ({
   explorerTxUrl: (hash: string) => `https://stellar.expert/tx/${hash}`,
@@ -49,6 +58,9 @@ vi.mock("../lib/api", () => ({
   submitRating: h.recordRating,
   createDispute: h.createDispute,
   linkDisputeId: h.linkDisputeId,
+  fetchMessages: h.fetchMessages,
+  sendMessage: h.sendMessage,
+  markMessagesRead: h.markMessagesRead,
 }));
 
 import JobDetail from "./JobDetail";
@@ -375,6 +387,42 @@ describe("JobDetail dispute timelock", () => {
 
     await screen.findByText(/frozen pending arbitration/i);
     expect(screen.queryByRole("button", { name: "Reclaim after timeout" })).toBeNull();
+  });
+});
+
+describe("JobDetail receipt link (#77)", () => {
+  it("links to the escrow's printable receipt", async () => {
+    render(<JobDetail />);
+
+    const link = await screen.findByRole("link", { name: "View receipt" });
+    expect(link.getAttribute("href")).toBe("/jobs/7/receipt");
+  });
+});
+
+describe("JobDetail milestone deadlines (#74)", () => {
+  /** An Active escrow whose only milestone has the given deadline. */
+  const activeWithDeadline = (deadline: bigint) => ({
+    ...ACTIVE,
+    milestones: [
+      { amount: 20_000_000n, released: false, released_amount: 0n, deadline },
+    ],
+  });
+
+  it("flags an unreleased milestone whose deadline has passed", async () => {
+    h.escrow.getEscrow.mockResolvedValue(activeWithDeadline(BigInt(nowSeconds() - 60)));
+    render(<JobDetail />);
+
+    // The reminder is visible where the work is released, not only on the
+    // Dashboard panel.
+    expect(await screen.findByText(/\(overdue\)/)).toBeTruthy();
+  });
+
+  it("shows the time left on a deadline still ahead", async () => {
+    h.escrow.getEscrow.mockResolvedValue(activeWithDeadline(BigInt(nowSeconds() + 4 * 3_600)));
+    render(<JobDetail />);
+
+    expect(await screen.findByText(/left\)/)).toBeTruthy();
+    expect(screen.queryByText(/\(overdue\)/)).toBeNull();
   });
 });
 
