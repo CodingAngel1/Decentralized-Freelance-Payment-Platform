@@ -21,7 +21,7 @@ import {
   UnknownAssetError,
   type AssetInfo,
 } from "../lib/assets";
-import { createJobSchema, createProposalSchema } from "../lib/schemas";
+import { createJobSchema, createProposalSchema, createDeliverableSchema } from "../lib/schemas";
 
 export const jobsRouter = Router();
 
@@ -147,7 +147,15 @@ jobsRouter.get("/:id", async (req, res, next) => {
     const job = await prisma.job.findUnique({
       where: { id: req.params.id },
       include: {
-        milestones: true,
+        milestones: {
+          include: {
+            deliverables: {
+              include: { uploadedBy: true },
+              orderBy: { createdAt: "desc" },
+            },
+          },
+          orderBy: { index: "asc" },
+        },
         client: true,
         freelancer: true,
         disputes: true,
@@ -259,3 +267,90 @@ jobsRouter.put("/:id/assign", requireAuth, async (req, res, next) => {
     next(err);
   }
 });
+
+// POST /api/jobs/:jobId/milestones/:index/deliverables
+jobsRouter.post(
+  "/:jobId/milestones/:index/deliverables",
+  requireAuth,
+  validate(createDeliverableSchema),
+  async (req, res, next) => {
+    try {
+      const milestoneIndex = parseInt(req.params.index, 10);
+      if (isNaN(milestoneIndex)) throw new AppError(400, "Invalid milestone index");
+
+      const job = await prisma.job.findUnique({
+        where: { id: req.params.jobId },
+        include: { freelancer: true },
+      });
+      if (!job) throw new AppError(404, "Job not found");
+
+      if (job.freelancer?.stellarAddress !== res.locals.stellarAddress) {
+        throw new AppError(403, "Only the assigned freelancer can attach deliverables to this milestone");
+      }
+
+      const milestone = await prisma.milestone.findFirst({
+        where: { jobId: job.id, index: milestoneIndex },
+      });
+      if (!milestone) throw new AppError(404, "Milestone not found");
+
+      if (milestone.status === "RELEASED") {
+        throw new AppError(400, "Cannot attach deliverables to an already released milestone");
+      }
+
+      const user = await prisma.user.upsert({
+        where: { stellarAddress: res.locals.stellarAddress },
+        create: { stellarAddress: res.locals.stellarAddress },
+        update: {},
+      });
+
+      const { fileName, fileUrl, fileSize, fileType, description } = req.body as {
+        fileName: string;
+        fileUrl: string;
+        fileSize?: number;
+        fileType?: string;
+        description?: string;
+      };
+
+      const deliverable = await prisma.deliverable.create({
+        data: {
+          milestoneId: milestone.id,
+          fileName,
+          fileUrl,
+          fileSize,
+          fileType,
+          description,
+          uploadedById: user.id,
+        },
+        include: { uploadedBy: true },
+      });
+
+      res.status(201).json(deliverable);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// GET /api/jobs/:jobId/milestones/:index/deliverables
+jobsRouter.get("/:jobId/milestones/:index/deliverables", async (req, res, next) => {
+  try {
+    const milestoneIndex = parseInt(req.params.index, 10);
+    if (isNaN(milestoneIndex)) throw new AppError(400, "Invalid milestone index");
+
+    const milestone = await prisma.milestone.findFirst({
+      where: { jobId: req.params.jobId, index: milestoneIndex },
+    });
+    if (!milestone) throw new AppError(404, "Milestone not found");
+
+    const deliverables = await prisma.deliverable.findMany({
+      where: { milestoneId: milestone.id },
+      include: { uploadedBy: true },
+      orderBy: { createdAt: "desc" },
+    });
+
+    res.json(deliverables);
+  } catch (err) {
+    next(err);
+  }
+});
+

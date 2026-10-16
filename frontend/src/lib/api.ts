@@ -51,6 +51,33 @@ export interface ProposalApi {
   };
 }
 
+export interface DeliverableApi {
+  id: string;
+  milestoneId: string;
+  fileName: string;
+  fileUrl: string;
+  fileSize?: number | null;
+  fileType?: string | null;
+  description?: string | null;
+  createdAt: string;
+  uploadedBy?: {
+    stellarAddress: string;
+    displayName?: string | null;
+  };
+}
+
+export interface MilestoneApi {
+  id: string;
+  jobId: string;
+  index: number;
+  amountUsdc: string | number;
+  description?: string | null;
+  status: "PENDING" | "RELEASED";
+  deadline?: string | null;
+  releasedAt?: string | null;
+  deliverables?: DeliverableApi[];
+}
+
 export interface JobApi {
   id: string;
   /** On-chain escrow id, present only once the job has been funded on-chain. */
@@ -64,6 +91,7 @@ export interface JobApi {
   client?: { stellarAddress: string; displayName?: string | null } | null;
   freelancer?: { stellarAddress: string } | null;
   proposals?: ProposalApi[];
+  milestones?: MilestoneApi[];
 }
 
 /** Fetch a page of jobs. Throws on a non-2xx response. */
@@ -133,6 +161,84 @@ export async function assignFreelancer(
   }
   return (await res.json()) as JobApi;
 }
+
+/** Upload/attach a deliverable to a milestone by milestone ID. */
+export async function uploadDeliverable(
+  milestoneId: string,
+  input: {
+    fileName: string;
+    fileUrl: string;
+    fileSize?: number;
+    fileType?: string;
+    description?: string;
+  },
+  token: string,
+): Promise<DeliverableApi> {
+  const res = await fetch(`${API_BASE_URL}/api/milestones/${encodeURIComponent(milestoneId)}/deliverables`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.error ?? `Could not upload deliverable (HTTP ${res.status})`);
+  }
+  return (await res.json()) as DeliverableApi;
+}
+
+/** Upload/attach a deliverable to a milestone by Job ID and milestone index. */
+export async function uploadJobMilestoneDeliverable(
+  jobId: string,
+  milestoneIndex: number,
+  input: {
+    fileName: string;
+    fileUrl: string;
+    fileSize?: number;
+    fileType?: string;
+    description?: string;
+  },
+  token: string,
+): Promise<DeliverableApi> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/milestones/${milestoneIndex}/deliverables`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.error ?? `Could not upload deliverable (HTTP ${res.status})`);
+  }
+  return (await res.json()) as DeliverableApi;
+}
+
+/** Fetch deliverables for a milestone by milestone ID. */
+export async function fetchMilestoneDeliverables(milestoneId: string): Promise<DeliverableApi[]> {
+  const res = await fetch(`${API_BASE_URL}/api/milestones/${encodeURIComponent(milestoneId)}/deliverables`);
+  if (!res.ok) throw new Error(`Could not load deliverables (HTTP ${res.status})`);
+  return (await res.json()) as DeliverableApi[];
+}
+
+/** Fetch deliverables for a milestone by Job ID and milestone index. */
+export async function fetchJobMilestoneDeliverables(
+  jobId: string,
+  milestoneIndex: number,
+): Promise<DeliverableApi[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/milestones/${milestoneIndex}/deliverables`,
+  );
+  if (!res.ok) throw new Error(`Could not load deliverables (HTTP ${res.status})`);
+  return (await res.json()) as DeliverableApi[];
+}
+
 
 // ---------------------------------------------------------------------------
 // Authenticated writes

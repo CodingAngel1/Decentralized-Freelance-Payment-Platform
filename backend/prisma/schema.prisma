@@ -20,11 +20,12 @@ model User {
   bio          String?
   createdAt    DateTime @default(now())
 
-  jobsAsClient     Job[]      @relation("ClientJobs")
-  jobsAsFreelancer Job[]      @relation("FreelancerJobs")
-  proposals        Proposal[] @relation("FreelancerProposals")
-  ratingsGiven     Rating[]   @relation("RatingsGiven")
-  ratingsReceived  Rating[]   @relation("RatingsReceived")
+  jobsAsClient     Job[]         @relation("ClientJobs")
+  jobsAsFreelancer Job[]         @relation("FreelancerJobs")
+  proposals        Proposal[]    @relation("FreelancerProposals")
+  uploadedDeliverables Deliverable[] @relation("UploadedDeliverables")
+  ratingsGiven     Rating[]      @relation("RatingsGiven")
+  ratingsReceived  Rating[]      @relation("RatingsReceived")
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,8 @@ model Milestone {
   status      MilestoneStatus @default(PENDING)
   deadline    DateTime?
   releasedAt  DateTime?
+
+  deliverables Deliverable[]
 
   // Every `include: { milestones: true }` (job list/detail, escrow routes,
   // indexer milestone-release handling) joins on jobId.
@@ -230,3 +233,24 @@ enum ProposalStatus {
   ACCEPTED
   REJECTED
 }
+
+// ---------------------------------------------------------------------------
+// Deliverables — off-chain milestone attachments (issue #65)
+// ---------------------------------------------------------------------------
+model Deliverable {
+  id           String    @id @default(cuid())
+  milestoneId  String
+  milestone    Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+  fileName     String
+  fileUrl      String
+  fileSize     Int?
+  fileType     String?
+  description  String?
+  uploadedById String
+  uploadedBy   User      @relation("UploadedDeliverables", fields: [uploadedById], references: [id])
+  createdAt    DateTime  @default(now())
+
+  @@index([milestoneId])
+  @@index([uploadedById])
+}
+

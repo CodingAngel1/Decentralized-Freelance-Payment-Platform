@@ -42,3 +42,12 @@ export const createProposalSchema = z.object({
   coverLetter: z.string().min(5).max(3000).optional(),
   proposedRate: amountUsdcSchema.optional(),
 });
+
+export const createDeliverableSchema = z.object({
+  fileName: z.string().min(1).max(255),
+  fileUrl: z.string().min(1),
+  fileSize: z.number().int().nonnegative().optional(),
+  fileType: z.string().max(100).optional(),
+  description: z.string().max(2000).optional(),
+});
+

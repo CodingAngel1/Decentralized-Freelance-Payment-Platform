@@ -33,7 +33,16 @@ import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
 import { assetForContractId, fromBaseUnits } from "../lib/assets";
-import { authenticate, createDispute, fetchJobs, linkDisputeId, submitRating as recordRating } from "../lib/api";
+import {
+  authenticate,
+  createDispute,
+  fetchJobs,
+  fetchJob,
+  linkDisputeId,
+  submitRating as recordRating,
+  uploadJobMilestoneDeliverable,
+  type DeliverableApi,
+} from "../lib/api";
 import { formatDeadline, formatRemaining, secondsUntil } from "../lib/time";
 
 const POLL_MS = 5_000;
@@ -99,7 +108,34 @@ export default function JobDetail() {
   const [reason, setReason] = useState("");
   const [disputeNote, setDisputeNote] = useState<string | null>(null);
 
+  // Deliverable attachments state
+  const [offChainJobId, setOffChainJobId] = useState<string | null>(null);
+  const [deliverables, setDeliverables] = useState<Record<number, DeliverableApi[]>>({});
+  const [attachingMilestoneIndex, setAttachingMilestoneIndex] = useState<number | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [deliverableDesc, setDeliverableDesc] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+
   const escrowId = id ? BigInt(id) : null;
+
+  const loadJobDeliverables = useCallback(async (jobIdToLoad: string) => {
+    try {
+      const job = await fetchJob(jobIdToLoad);
+      if (job?.milestones) {
+        const map: Record<number, DeliverableApi[]> = {};
+        for (const m of job.milestones) {
+          if (m.deliverables) {
+            map[m.index] = m.deliverables;
+          }
+        }
+        setDeliverables(map);
+      }
+    } catch {
+      // Job might not have off-chain record
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     if (escrowId === null) return;
@@ -116,8 +152,19 @@ export default function JobDetail() {
       } else {
         setDisputeDeadline(null);
       }
+
+      // Load off-chain job data and deliverables if available
+      try {
+        const jId = await findJobIdByEscrow(escrowId, data.client);
+        if (jId) {
+          setOffChainJobId(jId);
+          void loadJobDeliverables(jId);
+        }
+      } catch {
+        // ignore
+      }
     } else setLoadError("Could not load escrow (is the id correct?)");
-  }, [escrowId, getEscrow, getDisputeDeadline, hasPendingWrite]);
+  }, [escrowId, getEscrow, getDisputeDeadline, hasPendingWrite, loadJobDeliverables]);
 
   useEffect(() => {
     void refresh();
@@ -225,6 +272,60 @@ export default function JobDetail() {
     void refresh();
   }
 
+  async function handleUploadDeliverable(e: React.FormEvent, milestoneIndex: number) {
+    e.preventDefault();
+    if (!selectedFile || !publicKey) return;
+    setUploading(true);
+    setUploadError(null);
+    setUploadSuccess(null);
+    try {
+      const fileUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("Failed to read file"));
+        reader.readAsDataURL(selectedFile);
+      });
+
+      let targetJobId = offChainJobId;
+      if (!targetJobId && escrowId !== null) {
+        targetJobId = await findJobIdByEscrow(escrowId, publicKey);
+      }
+      if (!targetJobId) {
+        throw new Error("Could not find matching job record to attach deliverable");
+      }
+
+      const token = await authenticate(publicKey, signMessage);
+      const newDeliv = await uploadJobMilestoneDeliverable(
+        targetJobId,
+        milestoneIndex,
+        {
+          fileName: selectedFile.name,
+          fileUrl,
+          fileSize: selectedFile.size,
+          fileType: selectedFile.type,
+          description: deliverableDesc.trim() || undefined,
+        },
+        token,
+      );
+
+      setDeliverables((prev) => ({
+        ...prev,
+        [milestoneIndex]: [newDeliv, ...(prev[milestoneIndex] || [])],
+      }));
+      setUploadSuccess("Deliverable attached successfully!");
+      setSelectedFile(null);
+      setDeliverableDesc("");
+      setTimeout(() => {
+        setAttachingMilestoneIndex(null);
+        setUploadSuccess(null);
+      }, 1500);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Failed to upload deliverable");
+    } finally {
+      setUploading(false);
+    }
+  }
+
   /**
    * Store the off-chain dispute row: the reason, plus the id `raise` returned.
    *
@@ -290,27 +391,118 @@ export default function JobDetail() {
           <h2>Milestones</h2>
           <ol>
             {escrow.milestones.map((m, i) => (
-              <li key={i}>
-                {fromBaseUnits(m.amount, decimals)} {symbol} —{" "}
-                {m.released
-                  ? "released"
-                  : `${fromBaseUnits(m.released_amount, decimals)} released, ${fromBaseUnits(
-                      m.amount - m.released_amount,
-                      decimals,
-                    )} remaining`}{" "}
-                {isClient && isActive && !m.released && (
-                  <button
-                    disabled={isPending("release", `${escrowId}:${i}`)}
-                    onClick={() =>
-                      void releaseMilestone(escrowId, i).then((res) => {
-                        if (res) setLastHash(res.hash);
-                        void refresh();
-                      })
-                    }
-                  >
-                    Release
-                  </button>
-                )}
+              <li key={i} style={{ marginBottom: "1.25rem" }}>
+                <div>
+                  {fromBaseUnits(m.amount, decimals)} {symbol} —{" "}
+                  {m.released
+                    ? "released"
+                    : `${fromBaseUnits(m.released_amount, decimals)} released, ${fromBaseUnits(
+                        m.amount - m.released_amount,
+                        decimals,
+                      )} remaining`}{" "}
+                  {isClient && isActive && !m.released && (
+                    <button
+                      disabled={isPending("release", `${escrowId}:${i}`)}
+                      onClick={() =>
+                        void releaseMilestone(escrowId, i).then((res) => {
+                          if (res) setLastHash(res.hash);
+                          void refresh();
+                        })
+                      }
+                    >
+                      Release
+                    </button>
+                  )}
+                </div>
+
+                {/* Deliverables Section for this milestone */}
+                <div style={{ marginTop: "0.5rem", padding: "0.5rem", background: "var(--bg)", borderRadius: "var(--radius)" }}>
+                  <strong>Deliverables:</strong>
+                  {(!deliverables[i] || deliverables[i].length === 0) ? (
+                    <p className="muted" style={{ margin: "0.25rem 0", fontSize: "0.9rem" }}>No deliverable files attached yet.</p>
+                  ) : (
+                    <ul style={{ margin: "0.25rem 0", paddingLeft: "1.25rem", fontSize: "0.9rem" }}>
+                      {deliverables[i].map((d) => (
+                        <li key={d.id}>
+                          <a href={d.fileUrl} download={d.fileName} target="_blank" rel="noopener noreferrer">
+                            {d.fileName}
+                          </a>
+                          {d.fileSize ? ` (${(d.fileSize / 1024).toFixed(1)} KB)` : ""}
+                          {d.description ? ` — ${d.description}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {/* Freelancer file attachment form */}
+                  {isFreelancer && isActive && !m.released && (
+                    <div style={{ marginTop: "0.5rem" }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAttachingMilestoneIndex(attachingMilestoneIndex === i ? null : i);
+                          setUploadError(null);
+                          setUploadSuccess(null);
+                        }}
+                      >
+                        {attachingMilestoneIndex === i ? "Cancel Attachment" : "Attach Deliverable"}
+                      </button>
+
+                      {attachingMilestoneIndex === i && (
+                        <form
+                          onSubmit={(e) => void handleUploadDeliverable(e, i)}
+                          style={{
+                            marginTop: "0.5rem",
+                            padding: "0.5rem",
+                            border: "1px solid var(--border)",
+                            borderRadius: "var(--radius)",
+                            background: "var(--surface)",
+                          }}
+                        >
+                          <label>
+                            Select File
+                            <br />
+                            <input
+                              type="file"
+                              onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                              required
+                            />
+                          </label>
+                          <br />
+                          <label style={{ display: "block", marginTop: "0.5rem" }}>
+                            Description (optional)
+                            <br />
+                            <input
+                              type="text"
+                              value={deliverableDesc}
+                              onChange={(e) => setDeliverableDesc(e.target.value)}
+                              placeholder="Notes about this deliverable…"
+                              size={40}
+                            />
+                          </label>
+                          {uploadError && (
+                            <p role="alert" className="alert alert-error" style={{ marginTop: "0.5rem" }}>
+                              {uploadError}
+                            </p>
+                          )}
+                          {uploadSuccess && (
+                            <p className="alert" style={{ marginTop: "0.5rem" }}>
+                              {uploadSuccess}
+                            </p>
+                          )}
+                          <button
+                            type="submit"
+                            disabled={uploading || !selectedFile}
+                            className="btn-primary"
+                            style={{ marginTop: "0.5rem" }}
+                          >
+                            {uploading ? "Uploading…" : "Upload Deliverable"}
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                  )}
+                </div>
               </li>
             ))}
           </ol>
