@@ -46,4 +46,10 @@ describe("frontend/Dockerfile", () => {
     const expose = Number(/(?:^|\n)\s*EXPOSE\s+(\d+)/i.exec(runtimeStage(dockerfile))?.[1]);
     expect(expose, "runtime stage does not EXPOSE the nginx listen port").toBe(listen);
   });
+
+  it("supports configurable VITE_API_URL build argument for nginx reverse proxy (issue #55)", () => {
+    expect(dockerfile).toMatch(/^\s*ARG\s+VITE_API_URL=/m);
+    expect(dockerfile).toMatch(/VITE_API_URL=\$VITE_API_URL/);
+    expect(nginxConf).toMatch(/location\s+\/api\/\s*\{\s*proxy_pass\s+http:\/\/backend:3000;/);
+  });
 });

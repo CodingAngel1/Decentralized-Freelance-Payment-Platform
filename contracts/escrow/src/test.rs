@@ -116,6 +116,23 @@ fn field<T: TryFromVal<Env, Val>>(env: &Env, data: &Val, name: &str) -> T {
     T::try_from_val(env, &value).unwrap()
 }
 
+/// Decode the `#[topic]` field (`topic[1]`) of the first event named `name`.
+fn event_topic1<T: TryFromVal<Env, Val>>(env: &Env, name: &str) -> T {
+    for e in env.events().all().events() {
+        let xdr::ContractEventBody::V0(body) = &e.body;
+        let Some(topic0) = body.topics.first() else {
+            continue;
+        };
+        let topic_val = Val::try_from_val(env, topic0).unwrap();
+        if Symbol::try_from_val(env, &topic_val).unwrap() == Symbol::new(env, name) {
+            let topic1 = body.topics.get(1).expect("event has no topic1");
+            let val = Val::try_from_val(env, topic1).unwrap();
+            return T::try_from_val(env, &val).unwrap();
+        }
+    }
+    panic!("event {name:?} not found");
+}
+
 // ---------------------------------------------------------------------------
 // create
 // ---------------------------------------------------------------------------
@@ -218,6 +235,36 @@ fn create_rejects_same_counterparty() {
     assert!(matches!(res, Err(Ok(EscrowError::InvalidCounterparty))));
 }
 
+#[test]
+fn create_accepts_max_milestones() {
+    let f = fixture();
+    let amounts = vec![100i128; 20];
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &amounts),
+        &10_000,
+    );
+    let data = f.c().get(&id);
+    assert_eq!(data.milestones.len(), 20);
+    assert_eq!(data.total_amount, 2_000);
+}
+
+#[test]
+fn create_rejects_too_many_milestones() {
+    let f = fixture();
+    let amounts = vec![100i128; 21];
+    let res = f.c().try_create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &amounts),
+        &10_000,
+    );
+    assert!(matches!(res, Err(Ok(EscrowError::TooManyMilestones))));
+}
+
 // ---------------------------------------------------------------------------
 // update_milestones
 // ---------------------------------------------------------------------------
@@ -288,6 +335,38 @@ fn update_milestones_unknown_escrow_is_rejected() {
         .c()
         .try_update_milestones(&999, &milestones(&f.env, &[100]));
     assert!(matches!(res, Err(Ok(EscrowError::NotFound))));
+}
+
+#[test]
+fn update_milestones_accepts_max_milestones() {
+    let f = fixture();
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &[300, 700]),
+        &10_000,
+    );
+    let amounts = vec![50i128; 20];
+    f.c().update_milestones(&id, &milestones(&f.env, &amounts));
+    assert_eq!(f.c().get(&id).milestones.len(), 20);
+}
+
+#[test]
+fn update_milestones_rejects_too_many_milestones() {
+    let f = fixture();
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &[300, 700]),
+        &10_000,
+    );
+    let amounts = vec![50i128; 21];
+    let res = f
+        .c()
+        .try_update_milestones(&id, &milestones(&f.env, &amounts));
+    assert!(matches!(res, Err(Ok(EscrowError::TooManyMilestones))));
 }
 
 // ---------------------------------------------------------------------------
@@ -753,6 +832,48 @@ fn get_unknown_escrow_is_rejected() {
     let f = fixture();
     let res = f.c().try_get(&999);
     assert!(matches!(res, Err(Ok(EscrowError::NotFound))));
+}
+
+// ---------------------------------------------------------------------------
+// set_dispute_contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_dispute_contract_rotates_and_emits_event() {
+    let f = fixture();
+    let admin = Address::generate(&f.env);
+    let old_dispute = Address::generate(&f.env);
+    let new_dispute = Address::generate(&f.env);
+    init_escrow(&f, &admin, &old_dispute);
+    assert_eq!(f.c().dispute_contract(), old_dispute);
+
+    f.c().set_dispute_contract(&new_dispute);
+
+    // Read the log before any further invocation: the test env exposes the
+    // events of recent invocations only, so a later call (the view read
+    // below) clears them.
+    let data = event_data(&f.env, "dispute_contract_updated");
+    let old_contract: Address = field(&f.env, &data, "old_contract");
+    let new_contract: Address = field(&f.env, &data, "new_contract");
+    assert_eq!(old_contract, old_dispute);
+    assert_eq!(new_contract, new_dispute);
+
+    let topic_admin: Address = event_topic1(&f.env, "dispute_contract_updated");
+    assert_eq!(topic_admin, admin, "admin is the #[topic] field");
+
+    assert_eq!(
+        f.c().dispute_contract(),
+        new_dispute,
+        "view reflects rotation"
+    );
+}
+
+#[test]
+fn set_dispute_contract_before_init_is_rejected() {
+    let f = fixture();
+    let dispute = Address::generate(&f.env);
+    let res = f.c().try_set_dispute_contract(&dispute);
+    assert!(matches!(res, Err(Ok(EscrowError::NotInitialized))));
 }
 
 // ---------------------------------------------------------------------------

@@ -375,6 +375,19 @@ svg {
   border-color: var(--badge-created-border);
 }
 
+/* Milestone due-date reminders (issue #74) — a deadline, not an escrow state. */
+.badge-overdue {
+  background: #fdecea;
+  color: #b42318;
+  border-color: #f4c7c3;
+}
+
+.badge-due-soon {
+  background: #fdf5e6;
+  color: #92610a;
+  border-color: #f0dca8;
+}
+
 /* --- Jobs list ---------------------------------------------------------- */
 
 .job-list {
@@ -413,155 +426,83 @@ svg {
   display: block;
 }
 
-/* --- Accessibility & Utility ------------------------------------------- */
+/* --- Saved jobs --------------------------------------------------------- */
 
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border-width: 0;
+/* The bookmark toggle sits at the end of a job row, so it stays small. */
+.btn-save,
+.btn-saved {
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.85rem;
 }
 
-/* --- Skeletons & Async States ------------------------------------------ */
-
-@keyframes skeleton-shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
+.btn-saved {
+  background: #e6f0fd;
+  border-color: #bcd4f6;
+  color: #1d4ed8;
 }
 
-.skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--border) 25%,
-    var(--surface) 50%,
-    var(--border) 75%
-  );
-  background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s infinite ease-in-out;
-  border-radius: var(--radius);
+/* --- Skill tags --------------------------------------------------------- */
+
+.tag {
   display: inline-block;
-}
-
-.skeleton-container {
-  width: 100%;
-}
-
-.skeleton-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.skeleton-title {
-  width: 45%;
-  height: 1.25rem;
-  margin-right: 0.5rem;
-  vertical-align: middle;
-}
-
-.skeleton-badge {
-  width: 70px;
-  height: 1.25rem;
+  margin-left: 0.25rem;
+  padding: 0.05rem 0.5rem;
   border-radius: 999px;
-  vertical-align: middle;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #eef2f6;
+  color: #475569;
+  border: 1px solid #cbd5e1;
 }
 
-.skeleton-subtext {
-  width: 70%;
-  height: 0.9rem;
-  margin: 0.4rem 0;
-}
-
-.skeleton-link {
-  width: 25%;
-  height: 0.9rem;
-  margin-top: 0.25rem;
-}
-
-.skeleton-job-item {
-  padding: 0.75rem 0;
-}
-
-.job-detail-skeleton {
-  margin: 1.5rem 0;
-}
-
-.skeleton-row {
-  margin: 0.75rem 0;
-}
-
-.skeleton-label {
-  color: var(--muted);
-  margin-right: 0.5rem;
-}
-
-.skeleton-milestone-list {
-  padding-left: 1.25rem;
-}
-
-.skeleton-milestone-item {
-  margin: 0.5rem 0;
-}
-
-/* --- Empty and Error States --------------------------------------------- */
-
-.empty-state {
-  text-align: center;
-  padding: 2.5rem 1.5rem;
-  margin: 1.5rem 0;
-  background: var(--surface);
-  border: 2px dashed var(--border);
-  border-radius: var(--radius);
-}
-
-.empty-state-icon {
-  font-size: 2.5rem;
+.tag-group {
   margin-bottom: 0.5rem;
-  line-height: 1;
 }
 
-.empty-state h3 {
-  margin: 0 0 0.5rem;
-  font-size: 1.2rem;
-  color: var(--text);
+/* Inline so a category's tags wrap instead of stacking one per line. */
+.tag-option {
+  display: inline-block;
+  margin-right: 0.75rem;
+  font-size: 0.9rem;
+  white-space: nowrap;
 }
 
-.empty-state p {
-  margin: 0 0 1.25rem;
-  color: var(--muted);
-}
+/* --- Activity summary --------------------------------------------------- */
 
-.error-state {
-  margin: 1rem 0;
+/* Three counters side by side; wraps to one per line on a narrow screen. */
+.summary {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
+  gap: 0.75rem;
+  margin: 1rem 0;
 }
 
-.error-state .alert-error {
-  flex: 1 1 auto;
-  margin: 0;
+.stat {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 8rem;
 }
 
-.btn-retry {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  font-weight: 500;
-  padding: 0.4rem 0.8rem;
-  cursor: pointer;
+.stat-value {
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
-.btn-retry:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
+/* One released/locked total per asset, kept on a single line each. */
+.amount {
+  display: inline-block;
+  margin-right: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Fiat estimates (issue #76) ----------------------------------------- */
+
+/* Sits beside an amount without competing with it: smaller, muted, never bold. */
+.fiat {
+  font-size: 0.85em;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }

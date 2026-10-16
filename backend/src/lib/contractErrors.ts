@@ -39,6 +39,7 @@ export const ESCROW_ERROR_MESSAGES: Record<number, string> = {
   14: "A numeric overflow occurred.",
   15: "That amount is more than what's left on the milestone.",
   16: "The dispute timeout hasn't been reached yet.",
+  17: "The milestone list exceeds the maximum allowed length (20 milestones).",
 };
 
 /** `DisputeError` discriminants from `contracts/dispute/src/lib.rs`. */
@@ -56,6 +57,20 @@ export const DISPUTE_ERROR_MESSAGES: Record<number, string> = {
   11: "The arbitrator panel is invalid.",
   12: "The approval threshold is invalid.",
   13: "The panel hasn't approved that exact split enough times yet.",
+};
+
+/** `ReputationError` discriminants from `contracts/reputation/src/lib.rs`. */
+export const REPUTATION_ERROR_MESSAGES: Record<number, string> = {
+  1: "That rating doesn't exist.",
+  2: "The reputation contract is already initialized.",
+  3: "The reputation contract isn't initialized yet.",
+  4: "The score must be between 1 and 5.",
+  5: "You have already rated this job.",
+  6: "The escrow contract doesn't have that job.",
+  7: "The job isn't completed yet, so ratings are not allowed.",
+  8: "You're not a participant in this job.",
+  9: "The ratee must be the other participant in the job (not the rater).",
+  10: "A numeric overflow occurred.",
 };
 
 /** Extract the `#N` discriminant from a Soroban contract error, if present. */
