@@ -212,7 +212,7 @@ jobsRouter.get("/:id", async (req, res, next) => {
 });
 
 // PUT /api/jobs/:id/assign
-jobsRouter.put("/:id/assign", requireAuth, async (req, res, next) => {
+jobsRouter.put("/:id/assign", requireAuth, validate(assignJobSchema), async (req, res, next) => {
   try {
     const job = await prisma.job.findUnique({ where: { id: req.params.id }, include: { client: true } });
     if (!job) throw new AppError(404, "Job not found");
@@ -220,7 +220,15 @@ jobsRouter.put("/:id/assign", requireAuth, async (req, res, next) => {
       throw new AppError(403, "Only the client can assign a freelancer");
     }
 
-    const { freelancerAddress } = req.body as { freelancerAddress: string };
+    if (job.freelancerId) {
+      throw new AppError(400, "Job is already assigned to a freelancer");
+    }
+
+    const { freelancerAddress } = req.body as z.infer<typeof assignJobSchema>;
+    if (job.client.stellarAddress === freelancerAddress) {
+      throw new AppError(400, "Client cannot be assigned as freelancer to their own job");
+    }
+
     const freelancer = await prisma.user.findUnique({ where: { stellarAddress: freelancerAddress } });
     if (!freelancer) throw new AppError(404, "Freelancer not found");
 
@@ -233,3 +241,4 @@ jobsRouter.put("/:id/assign", requireAuth, async (req, res, next) => {
     next(err);
   }
 });
+

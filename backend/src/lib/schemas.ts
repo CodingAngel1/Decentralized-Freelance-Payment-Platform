@@ -54,3 +54,10 @@ export const createJobSchema = z.object({
   /** Curated skill tags describing the work (issue #70). */
   tags: jobTagsSchema,
 });
+
+export const assignJobSchema = z.object({
+  freelancerAddress: z
+    .string()
+    .refine(isValidStellarAddress, "Invalid Stellar address"),
+});
+
