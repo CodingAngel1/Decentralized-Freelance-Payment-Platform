@@ -14,6 +14,7 @@ import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { WalletProvider } from "./hooks/WalletProvider";
 import { useWallet } from "./hooks/wallet-context";
 import AddressField from "./components/AddressField";
+import NotificationsBell from "./components/NotificationsBell";
 import Dashboard from "./pages/Dashboard";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
@@ -25,9 +26,10 @@ function Nav() {
     <nav className="nav">
       <Link to="/">My Jobs</Link>
       <Link to="/post">Post a Job</Link>
-      <span className="nav-spacer">
+      <span className="nav-spacer" style={{ display: "inline-flex", alignItems: "center" }}>
         {publicKey ? (
           <>
+            <NotificationsBell />
             <AddressField address={publicKey} truncate />{" "}
             <button onClick={disconnect}>Disconnect</button>
           </>

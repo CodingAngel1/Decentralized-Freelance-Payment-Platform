@@ -245,3 +245,63 @@ export async function linkDisputeId(
   if (!res.ok) throw new Error(`Could not record the dispute id (HTTP ${res.status})`);
   return (await res.json()) as DisputeApi;
 }
+
+// ---------------------------------------------------------------------------
+// Notifications (#66)
+// ---------------------------------------------------------------------------
+
+export interface NotificationApi {
+  id: string;
+  userId: string;
+  jobId: string | null;
+  type: "FUNDED" | "RELEASED" | "DISPUTED" | "RESOLVED";
+  title: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface NotificationsResponse {
+  notifications: NotificationApi[];
+  unreadCount: number;
+}
+
+/** Fetch user notifications (requires bearer token). */
+export async function fetchNotifications(
+  token: string,
+  unreadOnly = false,
+  signal?: AbortSignal,
+): Promise<NotificationsResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/notifications${unreadOnly ? "?unread=true" : ""}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+    },
+  );
+  if (!res.ok) throw new Error(`Could not load notifications (HTTP ${res.status})`);
+  return (await res.json()) as NotificationsResponse;
+}
+
+/** Mark a single notification as read. */
+export async function markNotificationRead(
+  token: string,
+  notificationId: string,
+): Promise<NotificationApi> {
+  const res = await fetch(`${API_BASE_URL}/api/notifications/${notificationId}/read`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not mark notification as read (HTTP ${res.status})`);
+  return (await res.json()) as NotificationApi;
+}
+
+/** Mark all notifications for the user as read. */
+export async function markAllNotificationsRead(token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/notifications/read-all`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Could not mark all notifications as read (HTTP ${res.status})`);
+}
+

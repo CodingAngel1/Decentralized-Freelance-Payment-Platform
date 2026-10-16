@@ -20,10 +20,11 @@ model User {
   bio          String?
   createdAt    DateTime @default(now())
 
-  jobsAsClient     Job[]      @relation("ClientJobs")
-  jobsAsFreelancer Job[]      @relation("FreelancerJobs")
-  ratingsGiven     Rating[]   @relation("RatingsGiven")
-  ratingsReceived  Rating[]   @relation("RatingsReceived")
+  jobsAsClient     Job[]          @relation("ClientJobs")
+  jobsAsFreelancer Job[]          @relation("FreelancerJobs")
+  ratingsGiven     Rating[]       @relation("RatingsGiven")
+  ratingsReceived  Rating[]       @relation("RatingsReceived")
+  notifications    Notification[] @relation("UserNotifications")
 }
 
 // ---------------------------------------------------------------------------
@@ -202,3 +203,29 @@ model AuthNonce {
   nonce     String
   expiresAt DateTime
 }
+
+// ---------------------------------------------------------------------------
+// Notifications — persistent user alerts for contract and escrow events (#66)
+// ---------------------------------------------------------------------------
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation("UserNotifications", fields: [userId], references: [id])
+  jobId     String?
+  type      NotificationType
+  title     String
+  message   String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+}
+
+enum NotificationType {
+  FUNDED
+  RELEASED
+  DISPUTED
+  RESOLVED
+}
+

@@ -44,7 +44,7 @@
  */
 
 import { SorobanRpc } from "@stellar/stellar-sdk";
-import type { DisputeStatus, JobStatus } from "@prisma/client";
+import type { DisputeStatus, JobStatus, NotificationType } from "@prisma/client";
 import { config } from "./config";
 import { prisma } from "./db";
 import {
@@ -355,6 +355,40 @@ function asAddress(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+async function notifyParticipants(
+  escrowId: bigint,
+  type: NotificationType,
+  title: string,
+  message: string,
+  jobStore?: { findUnique(args: { where: { escrowId: bigint } }): Promise<unknown> },
+): Promise<void> {
+  try {
+    const finder = jobStore ?? prisma.job;
+    const rawJob = await finder.findUnique({
+      where: { escrowId },
+    });
+    if (!rawJob || typeof rawJob !== "object") return;
+    const job = rawJob as { id: string; clientId?: string; freelancerId?: string | null };
+    const recipients = [job.clientId, job.freelancerId].filter((id): id is string => Boolean(id));
+    if (recipients.length === 0) return;
+    await Promise.all(
+      recipients.map((userId) =>
+        prisma.notification?.create({
+          data: {
+            userId,
+            jobId: job.id,
+            type,
+            title,
+            message,
+          },
+        }),
+      ),
+    );
+  } catch {
+    // Gracefully ignore notification failure if database is unavailable or mocked
+  }
+}
+
 async function handleCreated(data: Record<string, unknown>): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
@@ -365,6 +399,7 @@ async function handleFunded(data: Record<string, unknown>): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
   await prisma.job.updateMany({ where: { escrowId }, data: { status: "ACTIVE" } });
+  await notifyParticipants(escrowId, "FUNDED", "Escrow Funded", "Escrow has been funded.");
 }
 
 async function handleMilestoneReleased(data: Record<string, unknown>): Promise<void> {
@@ -392,6 +427,13 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
   if (allReleased) {
     await prisma.job.update({ where: { id: job.id }, data: { status: "COMPLETED" } });
   }
+
+  await notifyParticipants(
+    escrowId,
+    "RELEASED",
+    "Milestone Released",
+    `Milestone ${index + 1} for job "${job.title}" has been released.`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +494,13 @@ export async function handleDisputeOpened(
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
   await db.job.updateMany({ where: { escrowId }, data: { status: "DISPUTED" } });
+  await notifyParticipants(
+    escrowId,
+    "DISPUTED",
+    "Dispute Opened",
+    "A dispute has been opened for the job.",
+    db.job,
+  );
 }
 
 async function handleResolved(data: Record<string, unknown>): Promise<void> {
@@ -462,6 +511,7 @@ async function handleResolved(data: Record<string, unknown>): Promise<void> {
     where: { job: { escrowId } },
     data: { status: "RESOLVED", resolvedAt: new Date() },
   });
+  await notifyParticipants(escrowId, "RESOLVED", "Dispute Resolved", "The dispute has been resolved.");
 }
 
 /**
