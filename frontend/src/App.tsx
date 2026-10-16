@@ -14,6 +14,7 @@ import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { WalletProvider } from "./hooks/WalletProvider";
 import { useWallet } from "./hooks/wallet-context";
 import AddressField from "./components/AddressField";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Dashboard from "./pages/Dashboard";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";
@@ -46,12 +47,16 @@ export default function App() {
     <WalletProvider>
       <BrowserRouter>
         <Nav />
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/post" element={<PostJob />} />
-          <Route path="/jobs/:id" element={<JobDetail />} />
-          <Route path="/profile/:address" element={<Profile />} />
-        </Routes>
+        {/* A render error in one page must not blank the whole app: the
+            fallback keeps the nav usable so the user can navigate away (#28). */}
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/post" element={<PostJob />} />
+            <Route path="/jobs/:id" element={<JobDetail />} />
+            <Route path="/profile/:address" element={<Profile />} />
+          </Routes>
+        </ErrorBoundary>
       </BrowserRouter>
     </WalletProvider>
   );

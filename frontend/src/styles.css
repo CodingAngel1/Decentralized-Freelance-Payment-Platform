@@ -220,3 +220,21 @@ fieldset {
 .qr-code {
   display: block;
 }
+
+/* --- Error boundary ----------------------------------------------------- */
+
+/* A page that fails to render should look like a state, not a crash. */
+.error-boundary {
+  max-width: 32rem;
+  margin: 2rem auto;
+  padding: 1.5rem;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.error-boundary h1 {
+  margin-top: 0;
+  font-size: 1.25rem;
+}
