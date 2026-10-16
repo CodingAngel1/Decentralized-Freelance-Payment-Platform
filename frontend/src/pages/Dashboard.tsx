@@ -12,6 +12,7 @@ import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
 import { fetchJobs, type JobApi } from "../lib/api";
 import { useWallet } from "../hooks/wallet-context";
+import { parseEscrowId } from "../lib/escrowId";
 
 const PAGE_SIZE = 10;
 const STATUSES = ["CREATED", "FUNDED", "ACTIVE", "COMPLETED", "DISPUTED", "REFUNDED"];
@@ -19,6 +20,7 @@ const STATUSES = ["CREATED", "FUNDED", "ACTIVE", "COMPLETED", "DISPUTED", "REFUN
 export default function Dashboard() {
   const { publicKey, connecting, connect, error: walletError } = useWallet();
   const [jobId, setJobId] = useState("");
+  const [jobIdError, setJobIdError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const [status, setStatus] = useState("");
@@ -85,18 +87,34 @@ export default function Dashboard() {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (jobId.trim()) navigate(`/jobs/${jobId.trim()}`);
+          const trimmed = jobId.trim();
+          if (!trimmed) return;
+          const parsed = parseEscrowId(trimmed);
+          if (parsed === null) {
+            setJobIdError(`"${trimmed}" is not a valid escrow id. Enter a non-negative integer.`);
+            return;
+          }
+          setJobIdError(null);
+          navigate(`/jobs/${trimmed}`);
         }}
       >
         <label>
           Open a job by on-chain id{" "}
           <input
             value={jobId}
-            onChange={(e) => setJobId(e.target.value)}
+            onChange={(e) => {
+              setJobId(e.target.value);
+              setJobIdError(null);
+            }}
             placeholder="0"
           />
         </label>{" "}
         <button type="submit">Open</button>
+        {jobIdError && (
+          <p role="alert" className="alert alert-error">
+            {jobIdError}
+          </p>
+        )}
       </form>
 
       <h2>All jobs</h2>

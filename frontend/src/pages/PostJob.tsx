@@ -28,6 +28,9 @@ interface MilestoneRow {
   amount: string;
 }
 
+/** Maximum milestones per escrow — must match `MAX_MILESTONES` in the contract. */
+const MAX_MILESTONES = 20;
+
 /**
  * Base units for one row's raw input, treating anything that is not a plain
  * decimal (empty or mid-typing like `.`) as zero so the live total never throws.
@@ -227,9 +230,12 @@ export default function PostJob() {
               )}
             </p>
           ))}
-          <button type="button" onClick={() => setRows((r) => [...r, { amount: "" }])}>
+          <button type="button" onClick={() => setRows((r) => [...r, { amount: "" }])} disabled={rows.length >= MAX_MILESTONES}>
             Add milestone
           </button>
+          {rows.length >= MAX_MILESTONES && (
+            <p className="muted">Maximum of {MAX_MILESTONES} milestones reached.</p>
+          )}
           <p>
             Total: <strong>{total}</strong> {asset.symbol}
           </p>

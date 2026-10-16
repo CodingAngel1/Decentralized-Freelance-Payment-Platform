@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   DISPUTE_ERROR_MESSAGES,
   ESCROW_ERROR_MESSAGES,
+  REPUTATION_ERROR_MESSAGES,
   friendlyContractError,
   parseContractErrorCode,
 } from "../lib/contractErrors";
@@ -39,9 +40,10 @@ describe("friendlyContractError", () => {
   });
 
   it("covers every EscrowError discriminant", () => {
-    // contracts/interface/src/lib.rs declares 1..=16; a gap would leave an
-    // avoidable raw host error in a 400 body.
-    for (let code = 1; code <= 16; code++) {
+    // contracts/interface/src/lib.rs declares 1..=17 (17 = TooManyMilestones,
+    // added by issue #96); a gap would leave an avoidable raw host error in a
+    // 400 body.
+    for (let code = 1; code <= 17; code++) {
       expect(ESCROW_ERROR_MESSAGES[code]).toBeTruthy();
       expect(parseContractErrorCode(`Error(Contract, #${code})`)).toBe(code);
     }
@@ -54,6 +56,13 @@ describe("friendlyContractError", () => {
     }
   });
 
+  it("covers every ReputationError discriminant", () => {
+    // contracts/reputation/src/lib.rs declares 1..=10.
+    for (let code = 1; code <= 10; code++) {
+      expect(REPUTATION_ERROR_MESSAGES[code]).toBeTruthy();
+    }
+  });
+
   it("uses the dispute map for a dispute call, since the codes collide", () => {
     // #7 is ZeroAmount in EscrowError and EscrowNotDisputed in DisputeError: the
     // same number, two different explanations. A route must pass its own map or
@@ -62,5 +71,12 @@ describe("friendlyContractError", () => {
 
     expect(friendlyContractError(host)).toBe(ESCROW_ERROR_MESSAGES[7]);
     expect(friendlyContractError(host, DISPUTE_ERROR_MESSAGES)).toMatch(/isn't disputed/i);
+  });
+
+  it("translates AlreadyRated (#5) via the reputation map", () => {
+    const host = "HostError: Error(Contract, #5)";
+    expect(friendlyContractError(host, REPUTATION_ERROR_MESSAGES)).toMatch(/already rated/i);
+    // Default map maps #5 to something different (MilestoneIndexOutOfBounds).
+    expect(friendlyContractError(host)).not.toMatch(/already rated/i);
   });
 });

@@ -74,6 +74,8 @@ pub enum EscrowError {
     Overflow = 14,
     AmountExceedsMilestone = 15,
     DisputeTimeoutNotReached = 16,
+    /// The milestone list exceeds [`MAX_MILESTONES`].
+    TooManyMilestones = 17,
 }
 
 // ---------------------------------------------------------------------------

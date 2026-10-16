@@ -35,6 +35,7 @@ import { explorerTxUrl } from "../lib/stellar";
 import { assetForContractId, fromBaseUnits } from "../lib/assets";
 import { authenticate, createDispute, fetchJobs, linkDisputeId, submitRating as recordRating } from "../lib/api";
 import { formatDeadline, formatRemaining, secondsUntil } from "../lib/time";
+import { parseEscrowId } from "../lib/escrowId";
 
 const POLL_MS = 5_000;
 
@@ -99,7 +100,7 @@ export default function JobDetail() {
   const [reason, setReason] = useState("");
   const [disputeNote, setDisputeNote] = useState<string | null>(null);
 
-  const escrowId = id ? BigInt(id) : null;
+  const escrowId = id ? parseEscrowId(id) : null;
 
   const refresh = useCallback(async () => {
     if (escrowId === null) return;
@@ -145,7 +146,13 @@ export default function JobDetail() {
   if (escrowId === null) {
     return (
       <Layout>
-        <p>Invalid job id.</p>
+        <p role="alert">
+          Invalid job id{id ? ` "${id}"` : ""}.{" "}
+          Escrow ids must be non-negative integers.
+        </p>
+        <p>
+          <Link to="/">← Back to Dashboard</Link>
+        </p>
       </Layout>
     );
   }
