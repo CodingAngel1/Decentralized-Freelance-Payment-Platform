@@ -321,15 +321,14 @@ export default function JobDetail() {
               <p>
                 <label htmlFor="dispute-reason">
                   Reason for the dispute
-                  <br />
                   <textarea
                     id="dispute-reason"
+                    className="form-control"
                     value={reason}
                     onChange={(e) => setReason(e.target.value)}
                     minLength={MIN_REASON}
                     maxLength={1000}
-                    rows={2}
-                    cols={60}
+                    rows={3}
                     placeholder="What went wrong? The arbitrator panel reads this."
                     required
                   />
@@ -421,14 +420,13 @@ export default function JobDetail() {
                 <p>
                   <label htmlFor="rating-comment">
                     Comment (optional)
-                    <br />
                     <textarea
                       id="rating-comment"
+                      className="form-control"
                       value={comment}
                       onChange={(e) => setComment(e.target.value)}
                       maxLength={500}
                       rows={2}
-                      cols={60}
                     />
                   </label>
                 </p>

@@ -161,11 +161,14 @@ body {
   max-width: 720px;
   margin: 0 auto;
   padding: 1.5rem 1rem 3rem;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
 }
 
 .nav {
   display: flex;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
   align-items: center;
   padding: 0.75rem 1rem;
   background: var(--surface);
@@ -184,6 +187,23 @@ body {
 
 .nav-spacer {
   margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+@media (max-width: 600px) {
+  .nav {
+    gap: 0.5rem;
+  }
+  .nav-spacer {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
+    padding-top: 0.25rem;
+    border-top: 1px solid var(--border);
+  }
 }
 
 .muted {
@@ -195,7 +215,6 @@ body {
   align-items: center;
   gap: 0.35rem;
   font-size: 0.85rem;
-  margin-right: 0.5rem;
 }
 
 /* --- Controls ----------------------------------------------------------- */
@@ -208,6 +227,7 @@ button {
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
+  max-width: 100%;
 }
 
 button:hover:not(:disabled) {
@@ -227,7 +247,7 @@ button:disabled {
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: var(--accent-hover);
   color: #fff;
 }
 
@@ -240,6 +260,31 @@ textarea {
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.form-control {
+  width: 100%;
+  max-width: 100%;
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.milestone-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.open-job-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1rem 0;
 }
 
 fieldset {
@@ -247,6 +292,17 @@ fieldset {
   border-radius: var(--radius);
   padding: 1rem;
   margin: 1rem 0;
+  max-width: 100%;
+}
+
+pre,
+code {
+  max-width: 100%;
+}
+
+img,
+svg {
+  max-width: 100%;
 }
 
 /* --- Feedback ----------------------------------------------------------- */

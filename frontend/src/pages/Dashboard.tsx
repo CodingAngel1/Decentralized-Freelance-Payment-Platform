@@ -83,6 +83,7 @@ export default function Dashboard() {
       )}
 
       <form
+        className="open-job-form"
         onSubmit={(e) => {
           e.preventDefault();
           if (jobId.trim()) navigate(`/jobs/${jobId.trim()}`);

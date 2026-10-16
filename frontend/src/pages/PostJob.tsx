@@ -143,15 +143,14 @@ export default function PostJob() {
         <p>
           <label htmlFor="post-job-title">
             Title
-            <br />
             <input
               id="post-job-title"
+              className="form-control"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Landing page redesign"
               minLength={3}
               maxLength={120}
-              size={60}
               required
             />
           </label>
@@ -160,15 +159,14 @@ export default function PostJob() {
         <p>
           <label htmlFor="post-job-description">
             Description
-            <br />
             <textarea
               id="post-job-description"
+              className="form-control"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What needs to be delivered…"
               minLength={10}
               rows={3}
-              cols={60}
               required
             />
           </label>
@@ -200,13 +198,12 @@ export default function PostJob() {
         <p>
           <label htmlFor="post-job-freelancer">
             Freelancer Stellar address
-            <br />
             <input
               id="post-job-freelancer"
+              className="form-control"
               value={freelancer}
               onChange={(e) => setFreelancer(e.target.value)}
               placeholder="G..."
-              size={60}
               required
             />
           </label>
@@ -215,7 +212,7 @@ export default function PostJob() {
         <fieldset>
           <legend>Milestones ({asset.symbol})</legend>
           {rows.map((row, i) => (
-            <p key={i}>
+            <div key={i} className="milestone-row">
               <label htmlFor={`milestone-amount-${i}`}>
                 Amount #{i + 1}{" "}
                 <input
@@ -237,7 +234,7 @@ export default function PostJob() {
                   Remove
                 </button>
               )}
-            </p>
+            </div>
           ))}
           <button type="button" onClick={() => setRows((r) => [...r, { amount: "" }])}>
             Add milestone
