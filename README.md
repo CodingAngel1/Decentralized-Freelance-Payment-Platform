@@ -67,8 +67,8 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | `dispute` contract | ✅ Complete — verified raise, M-of-N arbitrator panel, resolution that calls back into escrow, dispute timelock |
 | `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings, amount-weighted aggregates, per-pair anti-spam (`docs/REPUTATION.md`) |
 | Contract tests | ✅ 86 tests: 83 unit tests (escrow 49, dispute 17, reputation 17) covering every state transition and failure path, plus 3 end-to-end tests in `contracts/dispute/tests/full_flow.rs` that drive escrow + dispute + reputation together |
-| Backend tests | ✅ 74 tests |
-| Frontend tests | ✅ 86 tests (Vitest + Testing Library) — pages, components and lib helpers |
+| Backend tests | ✅ 115 tests |
+| Frontend tests | ✅ 122 tests (Vitest + Testing Library) — pages, components and lib helpers |
 | Testnet deployment | ✅ Deployed and initialized (ids in [`deployments/testnet.json`](./deployments/testnet.json)) |
 | Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, rate the counterparty, read reputation |
 | Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC, with a dead-letter table for events it cannot apply |
@@ -188,10 +188,14 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `POST` | `/api/reputation` | ✅ | Build `reputation.submit` |
 | `GET` | `/api/reputation/:address` | — | Aggregate reputation |
 
-Rate limiting is 100 requests/minute per IP. The **event indexer** runs
-in-process, polling Soroban RPC for the configured contracts and applying events
-to the database. Failures are recorded in `IndexerDeadLetter` rather than
-dropped, and the cursor is persisted so restarts resume where they left off.
+Rate limiting is 100 requests/minute per IP, and every request is logged as one
+structured JSON line (method, path, status, duration) unless `NODE_ENV=test`.
+The **event indexer** runs in-process, polling Soroban RPC for the configured
+contracts and applying events to the database. Failures are recorded in
+`IndexerDeadLetter` rather than dropped, and the cursor is persisted so restarts
+resume where they left off. `SIGTERM`/`SIGINT` stop the indexer, drain in-flight
+requests, and disconnect Prisma before the process exits, so a deploy neither
+cuts a response nor leaves the interval and connection dangling.
 
 ## Frontend
 
@@ -209,7 +213,9 @@ are mapped to readable messages (`frontend/src/lib/errors.ts`), and per-target
 pending state stops double submits. Every address on screen is copyable in one
 click and can be expanded into a QR code to scan into a wallet
 (`frontend/src/components/AddressField.tsx`) — a `G…` address is 56 characters,
-and selecting one by hand is how funds reach the wrong account.
+and selecting one by hand is how funds reach the wrong account. A top-level error
+boundary wraps the routes, so a render error in one page shows a short fallback
+with a reload control rather than blanking the app.
 
 ## Stack
 
