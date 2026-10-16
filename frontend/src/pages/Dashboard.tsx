@@ -3,6 +3,14 @@
  *
  * Landing page: connect the wallet, browse the job list, and open a job by
  * its on-chain id. The list comes from `GET /api/jobs`.
+ *
+ * The list can be narrowed by status and by skill tag (issue #70); the tag is
+ * sent as `?tag=<slug>` and both filters are applied by the API, so pagination
+ * stays correct instead of filtering a page client-side.
+ *
+ * A connected wallet can also bookmark a job (issue #71). "Saved only" swaps
+ * the rendered list for the bookmark list, which is already complete, so the
+ * pagination control is hidden while it is on.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -10,7 +18,10 @@ import { Link, useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import AddressField from "../components/AddressField";
+import FiatEstimate from "../components/FiatEstimate";
 import { fetchJobs, type JobApi } from "../lib/api";
+import { SKILL_TAGS, tagLabel } from "../lib/tags";
+import { useSavedJobs } from "../hooks/useSavedJobs";
 import { useWallet } from "../hooks/wallet-context";
 import { parseEscrowId } from "../lib/escrowId";
 
@@ -24,11 +35,18 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   const [status, setStatus] = useState("");
+  const [tag, setTag] = useState("");
+  const [savedOnly, setSavedOnly] = useState(false);
+  const { savedJobs, isSaved, toggle, pendingId, error: savedError } = useSavedJobs();
   const [jobs, setJobs] = useState<JobApi[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
+
+  // What actually renders: the bookmark list when "Saved only" is on (it is
+  // returned complete), otherwise the paginated API list.
+  const visibleJobs = savedOnly ? savedJobs : jobs;
 
   const load = useCallback(
     async (pageToLoad: number, append: boolean, signal?: AbortSignal) => {
@@ -36,7 +54,12 @@ export default function Dashboard() {
       setJobsError(null);
       try {
         const data = await fetchJobs(
-          { status: status || undefined, page: pageToLoad, limit: PAGE_SIZE },
+          {
+            status: status || undefined,
+            tag: tag || undefined,
+            page: pageToLoad,
+            limit: PAGE_SIZE,
+          },
           signal,
         );
         setJobs((prev) => (append ? [...prev, ...data] : data));
@@ -50,7 +73,7 @@ export default function Dashboard() {
         setJobsLoading(false);
       }
     },
-    [status],
+    [status, tag],
   );
 
   useEffect(() => {
@@ -129,25 +152,58 @@ export default function Dashboard() {
             </option>
           ))}
         </select>
-      </label>
+      </label>{" "}
+      <label>
+        Filter by skill{" "}
+        <select value={tag} onChange={(e) => setTag(e.target.value)}>
+          <option value="">All skills</option>
+          {SKILL_TAGS.map((skill) => (
+            <option key={skill.slug} value={skill.slug}>
+              {skill.label}
+            </option>
+          ))}
+        </select>
+      </label>{" "}
+      {publicKey && (
+        <label>
+          <input
+            type="checkbox"
+            checked={savedOnly}
+            onChange={(e) => setSavedOnly(e.target.checked)}
+          />{" "}
+          Saved only ({savedJobs.length})
+        </label>
+      )}
 
-      {jobsError && (
+      {(jobsError || savedError) && (
         <p role="alert" className="alert alert-error">
-          {jobsError}
+          {jobsError ?? savedError}
         </p>
       )}
 
-      {jobsLoading && jobs.length === 0 && <p>Loading jobs…</p>}
+      {jobsLoading && visibleJobs.length === 0 && <p>Loading jobs…</p>}
 
-      {!jobsLoading && !jobsError && jobs.length === 0 && (
-        <p className="muted">No jobs found.</p>
+      {!jobsLoading && !jobsError && visibleJobs.length === 0 && (
+        <p className="muted">
+          {savedOnly ? "No saved jobs yet." : "No jobs found."}
+        </p>
       )}
 
-      {jobs.length > 0 && (
+      {visibleJobs.length > 0 && (
         <ul className="job-list">
-          {jobs.map((job) => (
+          {visibleJobs.map((job) => (
             <li key={job.id}>
               <strong>{job.title}</strong> <StatusBadge status={job.status} />
+              {job.tags && job.tags.length > 0 && (
+                <>
+                  {" "}
+                  {job.tags.map((slug) => (
+                    <span key={slug} className="tag">
+                      {tagLabel(slug)}
+                    </span>
+                  ))}
+                </>
+              )}
               <br />
               <span className="muted">
                 Client:{" "}
@@ -160,7 +216,8 @@ export default function Dashboard() {
                 ) : (
                   "—"
                 )}{" "}
-                · Total: {String(job.totalAmountUsdc)} {job.asset ?? ""}
+                · Total: {String(job.totalAmountUsdc)} {job.asset ?? ""}{" "}
+                <FiatEstimate amount={String(job.totalAmountUsdc)} asset={job.asset ?? ""} />
               </span>
               <br />
               {job.escrowId !== null && job.escrowId !== undefined ? (
@@ -168,12 +225,26 @@ export default function Dashboard() {
               ) : (
                 <span className="muted">Not funded on-chain yet</span>
               )}
+              {publicKey && (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    className={isSaved(job.id) ? "btn-saved" : "btn-save"}
+                    aria-pressed={isSaved(job.id)}
+                    disabled={pendingId === job.id}
+                    onClick={() => void toggle(job)}
+                  >
+                    {isSaved(job.id) ? "Saved" : "Save"}
+                  </button>
+                </>
+              )}
             </li>
           ))}
         </ul>
       )}
 
-      {hasMore && (
+      {hasMore && !savedOnly && (
         <button
           disabled={jobsLoading}
           onClick={() => void load(page + 1, true)}

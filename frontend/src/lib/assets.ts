@@ -15,6 +15,11 @@ export interface Asset {
   contractId: string;
   /** Number of decimal places the asset uses (USDC and XLM both use 7). */
   decimals: number;
+  /**
+   * This asset's id in the fiat price feed (`lib/prices.ts`). Optional: an
+   * asset without one still works everywhere, it just gets no fiat estimate.
+   */
+  priceId?: string;
 }
 
 export const ASSETS: Asset[] = [
@@ -22,11 +27,13 @@ export const ASSETS: Asset[] = [
     symbol: "USDC",
     contractId: import.meta.env.VITE_USDC_CONTRACT_ID ?? "",
     decimals: 7,
+    priceId: "usd-coin",
   },
   {
     symbol: "XLM",
     contractId: import.meta.env.VITE_XLM_CONTRACT_ID ?? "",
     decimals: 7,
+    priceId: "stellar",
   },
 ];
 
