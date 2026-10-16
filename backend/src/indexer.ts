@@ -33,6 +33,11 @@
  *     `REFUNDED` and `RESOLVED` are the two terminal dispute states.
  *
  * Contributor Notes:
+ * - `milestone_released` is emitted by both `release_milestone` and
+ *   `release_partial`, and its `amount` is only what *that* call paid. The
+ *   handler accumulates it on the milestone's `releasedAmount` and marks the
+ *   milestone RELEASED only once the running total reaches its amount, so a
+ *   partial payment no longer completes the job (issue #25).
  * - The cursor (last scanned ledger) is persisted in IndexerCursor, so the
  *   indexer resumes after a restart and does not reprocess applied ledgers.
  * - Unknown events are ignored; a failed event is logged and recorded in
@@ -44,9 +49,10 @@
  */
 
 import { SorobanRpc } from "@stellar/stellar-sdk";
-import type { DisputeStatus, JobStatus } from "@prisma/client";
+import type { DisputeStatus, JobStatus, MilestoneStatus } from "@prisma/client";
 import { config } from "./config";
 import { prisma } from "./db";
+import { ASSETS, formatAmount, toBaseUnits } from "./lib/assets";
 import {
   KNOWN_EVENTS,
   decodeEventData,
@@ -104,14 +110,52 @@ export interface CursorStore {
   set(ledger: number): Promise<void>;
 }
 
-export function startIndexer() {
+/**
+ * A running indexer. `stop()` halts polling and drains the poll already in
+ * flight, so a shutdown never cuts a cursor write in half (issue #26).
+ */
+export interface IndexerHandle {
+  stop(): Promise<void>;
+}
+
+/**
+ * Start the polling loop and hand back a handle that can stop it.
+ *
+ * The interval is no longer fire-and-forget: without the handle a SIGTERM left
+ * it running until the process was killed, and two polls could overlap and race
+ * on the same cursor.
+ */
+export function startIndexer(): IndexerHandle {
   if (CONTRACT_IDS.length === 0) {
     console.warn("[indexer] No contract IDs configured — skipping.");
-    return;
+    return { stop: async () => {} };
   }
+
   console.log("[indexer] Starting, polling every", config.INDEXER_POLL_INTERVAL_MS, "ms");
-  void poll();
-  setInterval(() => void poll(), config.INDEXER_POLL_INTERVAL_MS);
+
+  let stopped = false;
+  // The poll currently running, if any; `stop()` awaits it.
+  let inFlight: Promise<void> | null = null;
+
+  const tick = () => {
+    // `poll()` catches its own errors, so this only guards against overlap:
+    // one poll at a time keeps two writers off the same cursor row.
+    if (stopped || inFlight) return;
+    inFlight = poll().finally(() => {
+      inFlight = null;
+    });
+  };
+
+  tick();
+  const timer = setInterval(tick, config.INDEXER_POLL_INTERVAL_MS);
+
+  return {
+    stop: async () => {
+      stopped = true;
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
 }
 
 async function poll() {
@@ -368,12 +412,69 @@ async function handleFunded(data: Record<string, unknown>): Promise<void> {
   await prisma.job.updateMany({ where: { escrowId }, data: { status: "ACTIVE" } });
 }
 
-async function handleMilestoneReleased(data: Record<string, unknown>): Promise<void> {
+/**
+ * The slice of `prisma` the milestone-release handler reads and writes, kept
+ * structural (like `DisputeLifecycleStores`) so a partial-then-full sequence can
+ * be driven through the real handler against an in-memory store.
+ */
+export interface MilestoneReleaseStores {
+  job: {
+    findUnique(args: {
+      where: { escrowId: bigint };
+      include: { milestones: true };
+    }): Promise<MilestoneReleaseJob | null>;
+    update(args: { where: { id: string }; data: { status: JobStatus } }): Promise<unknown>;
+  };
+  milestone: {
+    update(args: {
+      where: { id: string };
+      data: {
+        status?: MilestoneStatus;
+        releasedAt?: Date;
+        releasedAmount?: string;
+      };
+    }): Promise<unknown>;
+  };
+}
+
+/** The job row `handleMilestoneReleased` loads, milestones included. */
+export interface MilestoneReleaseJob {
+  id: string;
+  /** Asset symbol the job pays in — selects the decimal scale for the amounts. */
+  asset: string;
+  milestones: Array<{
+    id: string;
+    index: number;
+    status: MilestoneStatus;
+    /** Prisma `Decimal` at runtime; anything stringifiable works here. */
+    amountUsdc: { toString(): string } | string | number;
+    releasedAmount: { toString(): string } | string | number;
+  }>;
+}
+
+/**
+ * A `milestone_released` event is emitted by *both* `release_milestone` and
+ * `release_partial`, and its `amount` is the sum paid by *this* call — not the
+ * milestone's total. Marking the milestone RELEASED on every event (the
+ * behaviour before issue #25) records a half-paid milestone as done and
+ * completes the job while the freelancer is still owed the remainder.
+ *
+ * So the handler accumulates: each event's `amount` is added to the milestone's
+ * `releasedAmount`, and the milestone only flips to RELEASED once the running
+ * total reaches `amountUsdc`. Comparing the event's amount to the milestone
+ * total instead would still be wrong for a partial-then-full sequence, because
+ * `release_milestone` emits only the *remaining* amount after earlier partials.
+ * The job completes only when every milestone is fully released.
+ */
+export async function handleMilestoneReleased(
+  data: Record<string, unknown>,
+  store: MilestoneReleaseStores = prisma as unknown as MilestoneReleaseStores,
+): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   const index = asNumber(data.index);
   if (escrowId === null || index === null) return;
 
-  const job = await prisma.job.findUnique({
+  const job = await store.job.findUnique({
     where: { escrowId },
     include: { milestones: true },
   });
@@ -382,16 +483,37 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
   const milestone = job.milestones.find((m) => m.index === index);
   if (!milestone) return;
 
-  await prisma.milestone.update({
+  // Amounts arrive as i128 base units; the milestone columns are decimals in
+  // the asset's human units. Convert both to base units (exact bigint math),
+  // then store the human-unit string back.
+  const decimals = ASSETS[job.asset.toUpperCase()]?.decimals ?? 7;
+  const milestoneTotal = toBaseUnits(String(milestone.amountUsdc), decimals);
+  const releasedSoFar =
+    toBaseUnits(String(milestone.releasedAmount ?? 0), decimals) + (asBigInt(data.amount) ?? 0n);
+
+  // A zero-amount milestone cannot be "released" by arithmetic; leave it alone.
+  const fullyReleased = milestoneTotal > 0n && releasedSoFar >= milestoneTotal;
+
+  await store.milestone.update({
     where: { id: milestone.id },
-    data: { status: "RELEASED", releasedAt: new Date() },
+    data: fullyReleased
+      ? {
+          status: "RELEASED",
+          releasedAt: new Date(),
+          // Clamp: the chain never over-releases, but a stray event must not
+          // push the stored total past the milestone.
+          releasedAmount: formatAmount(milestoneTotal, decimals),
+        }
+      : { releasedAmount: formatAmount(releasedSoFar, decimals) },
   });
+
+  if (!fullyReleased) return;
 
   const allReleased = job.milestones.every(
     (m) => m.id === milestone.id || m.status === "RELEASED",
   );
   if (allReleased) {
-    await prisma.job.update({ where: { id: job.id }, data: { status: "COMPLETED" } });
+    await store.job.update({ where: { id: job.id }, data: { status: "COMPLETED" } });
   }
 }
 
