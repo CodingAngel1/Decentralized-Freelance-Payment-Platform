@@ -47,6 +47,7 @@ import { SorobanRpc } from "@stellar/stellar-sdk";
 import type { DisputeStatus, JobStatus } from "@prisma/client";
 import { config } from "./config";
 import { prisma } from "./db";
+import { checkConfiguredContractIds, type ContractIdName } from "./lib/contractFreshness";
 import {
   KNOWN_EVENTS,
   decodeEventData,
@@ -82,6 +83,9 @@ const CONTRACT_IDS = [
   config.REPUTATION_CONTRACT_ID,
 ].filter(Boolean);
 
+/** The contracts the indexer is expected to follow, for a partial-config check. */
+const INDEXED_CONTRACTS: ContractIdName[] = ["escrow", "dispute", "reputation"];
+
 const rpcServer = new SorobanRpc.Server(config.SOROBAN_RPC_URL, { allowHttp: false });
 
 /** Minimal surface of `SorobanRpc.Server` the indexer needs (for testing). */
@@ -105,10 +109,28 @@ export interface CursorStore {
 }
 
 export function startIndexer() {
+  // Contract ids change on every deploy, so compare the configured ones with
+  // the last deploy record before doing anything else. Stale-but-non-empty ids
+  // used to leave the indexer polling the superseded contracts with no warning
+  // at all; this turns that silent misconfiguration into a loud log line.
+  checkConfiguredContractIds({
+    escrow: config.ESCROW_CONTRACT_ID,
+    dispute: config.DISPUTE_CONTRACT_ID,
+    reputation: config.REPUTATION_CONTRACT_ID,
+  });
+
   if (CONTRACT_IDS.length === 0) {
     console.warn("[indexer] No contract IDs configured — skipping.");
     return;
   }
+
+  if (CONTRACT_IDS.length < INDEXED_CONTRACTS.length) {
+    console.warn(
+      `[indexer] Only ${CONTRACT_IDS.length}/${INDEXED_CONTRACTS.length} contract IDs ` +
+        "configured — events from the unconfigured contract(s) will not be indexed.",
+    );
+  }
+
   console.log("[indexer] Starting, polling every", config.INDEXER_POLL_INTERVAL_MS, "ms");
   void poll();
   setInterval(() => void poll(), config.INDEXER_POLL_INTERVAL_MS);

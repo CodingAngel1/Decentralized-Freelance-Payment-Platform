@@ -14,6 +14,10 @@ const schema = z.object({
   USDC_CONTRACT_ID: z.string().default(""),
   XLM_CONTRACT_ID: z.string().default(""),
   INDEXER_POLL_INTERVAL_MS: z.coerce.number().default(5000),
+  // Optional path to the deploy record used for the startup freshness check.
+  // Empty (the default) makes the indexer search the usual repo/image paths
+  // (`deployments/testnet.json`); see src/lib/contractFreshness.ts.
+  DEPLOYMENTS_FILE: z.string().default(""),
   // Comma-separated Stellar addresses that may resolve disputes through the
   // API. Empty means "nobody", not "everybody": the route fails closed.
   ARBITRATOR_ADDRESSES: z.string().default(""),

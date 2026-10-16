@@ -28,6 +28,12 @@
 #               frontend/.env.bak), because contract ids from an earlier deploy
 #               are stale the moment the contracts are redeployed.
 #
+# Outputs:
+#   deployments/testnet.json   machine-readable record of the new contracts
+#   frontend/.env              VITE_* ids baked into the next Vite build
+#   backend/.env.contracts     ESCROW_/DISPUTE_/REPUTATION_ ids for the API
+#   (stdout)                   checklist of the dashboard values to update
+#
 # Requirements:
 #   - stellar-cli v25.2.0+  (v28 is current)
 #   - a funded testnet identity:  stellar keys generate deployer --network testnet --fund
@@ -129,5 +135,44 @@ VITE_XLM_CONTRACT_ID=$XLM_CONTRACT_ID
 ENV
   echo "==> Wrote $FE_ENV"
 fi
+
+# The backend is a second consumer of the same ids. Emit a dotenv fragment it
+# can load directly, and print the exact values the hosted dashboard needs —
+# render.yaml deliberately no longer hardcodes them (issue #91), because a
+# committed id is stale the moment the contracts are redeployed.
+BE_ENV="$REPO_ROOT/backend/.env.contracts"
+cat > "$BE_ENV" <<ENV
+STELLAR_NETWORK=$NETWORK
+ESCROW_CONTRACT_ID=$ESCROW_CONTRACT_ID
+DISPUTE_CONTRACT_ID=$DISPUTE_CONTRACT_ID
+REPUTATION_CONTRACT_ID=$REPUTATION_CONTRACT_ID
+USDC_CONTRACT_ID=$USDC_CONTRACT_ID
+XLM_CONTRACT_ID=$XLM_CONTRACT_ID
+ARBITRATOR_ADDRESSES=$ADMIN
+ENV
+echo "==> Wrote $BE_ENV"
+
+cat <<CHECKLIST
+
+==> Redeploy checklist — every consumer of these ids must be updated:
+
+    1. Backend env (Render dashboard → stellar-freelance-api → Environment).
+       render.yaml no longer carries contract ids, so set these and redeploy:
+         ESCROW_CONTRACT_ID=$ESCROW_CONTRACT_ID
+         DISPUTE_CONTRACT_ID=$DISPUTE_CONTRACT_ID
+         REPUTATION_CONTRACT_ID=$REPUTATION_CONTRACT_ID
+         ARBITRATOR_ADDRESSES=$ADMIN
+
+    2. Frontend (Vercel): frontend/.env above is baked in at build time.
+       Set the same VITE_* vars and redeploy:  cd frontend && vercel deploy --prod
+
+    3. Local / VPS backend: backend/.env.contracts above is ready to load.
+
+    The API compares its configured ids with $DEPLOYMENTS_DIR/testnet.json at
+    startup and logs "[config] Contract IDs do not match the latest deploy" when
+    they diverge. After updating, restart the backend and confirm that line is
+    gone. Full procedure: docs/DEPLOYMENT.md → "Redeploying the contracts".
+
+CHECKLIST
 
 echo "==> Done."

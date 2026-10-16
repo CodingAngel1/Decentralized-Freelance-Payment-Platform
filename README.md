@@ -357,8 +357,11 @@ CI runs all three on every push and pull request to `main`
 ## Deployment
 
 Contract ids change on every deploy. `scripts/deploy_testnet.sh` regenerates
-`frontend/.env` automatically (backing up the previous file) so the app never
-keeps pointing at superseded contracts.
+`frontend/.env` and `backend/.env.contracts` automatically (backing up the
+previous frontend file) and prints the values the Render dashboard needs, so no
+consumer keeps pointing at superseded contracts. The deployed backend also warns
+at startup when its configured ids no longer match `deployments/testnet.json`
+(issue #91), and `render.yaml` deliberately carries no contract ids.
 
 | Piece | Host | Why there |
 |-------|------|-----------|
