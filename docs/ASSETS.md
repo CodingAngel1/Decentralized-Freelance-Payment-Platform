@@ -4,7 +4,8 @@ The escrow contract is asset-agnostic: `create` takes a token address per escrow
 and moves that Stellar Asset Contract (SAC). The symbol → SAC mapping lives in
 two small registries, one per app:
 
-- `frontend/src/lib/assets.ts` — symbol, contract id (from `VITE_*`), decimals.
+- `frontend/src/lib/assets.ts` — symbol, contract id (from `VITE_*`), decimals,
+  and the asset's id in the fiat price feed (`priceId`, optional).
 - `backend/src/lib/assets.ts` — symbol, decimals, and the config key holding the
   contract id.
 
@@ -67,6 +68,9 @@ accepts `asset: "USDC"`, and the demo prefers it over the XLM fallback.
    ```
 
    and add `VITE_AQUA_CONTRACT_ID=` to `frontend/.env.example` and `.env`.
+   Add `priceId` (the asset's id in the price feed, e.g. `"aqua"`) if it should
+   get an approximate fiat figure beside its amounts — omit it and the UI shows
+   no estimate, which is fine (see `frontend/src/lib/prices.ts`).
 
 2. **Backend** — append an entry to `ASSETS` in `backend/src/lib/assets.ts`:
 
@@ -89,3 +93,5 @@ accepts `asset: "USDC"`, and the demo prefers it over the XLM fallback.
   chosen when the transaction is built.
 - The testnet demo (`scripts/demo_testnet.sh`) falls back to the native XLM SAC
   when no USDC contract id is configured.
+- Fiat figures are always estimates: they are rounded, priced from a cached
+  public feed, and are never used in any transaction or record.

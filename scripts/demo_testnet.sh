@@ -49,9 +49,15 @@ if [ -z "$TOKEN" ]; then
 fi
 
 EXPIRY=$(( $(date +%s) + 3600 ))
+# Per-milestone deadlines (u64, unix seconds). The contract stores them but does
+# not enforce them yet (issue #48), so they are advisory — they are still real
+# timestamps rather than a placeholder 0, so the demo does not normalise a value
+# the field's documentation no longer implies.
+FIRST_DEADLINE=$(( $(date +%s) + 1800 ))
+SECOND_DEADLINE=$(( $(date +%s) + 2400 ))
 # 1 XLM / 0.1 XLM in stroops, as a Vec<Milestone> JSON argument.
 # Amount (i128) is encoded as a string; deadline (u64) as a number.
-MILESTONES='[{"amount":"10000000","deadline":0,"released":false,"released_amount":"0"},{"amount":"1000000","deadline":0,"released":false,"released_amount":"0"}]'
+MILESTONES="[{\"amount\":\"10000000\",\"deadline\":$FIRST_DEADLINE,\"released\":false,\"released_amount\":\"0\"},{\"amount\":\"1000000\",\"deadline\":$SECOND_DEADLINE,\"released\":false,\"released_amount\":\"0\"}]"
 
 invoke() { stellar contract invoke --id "$1" --source "$IDENTITY" --network "$NETWORK" -- "${@:2}"; }
 

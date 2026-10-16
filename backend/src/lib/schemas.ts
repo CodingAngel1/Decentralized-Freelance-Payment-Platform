@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import { isValidStellarAddress } from "./stellarAddress";
+import { isSkillTag, MAX_JOB_TAGS, SKILL_TAG_SLUGS } from "./tags";
 
 /**
  * A milestone amount: a positive number, or a positive decimal string.
@@ -30,6 +30,20 @@ export const milestoneSchema = z.object({
   deadline: z.string().datetime().optional(),
 });
 
+/**
+ * A job's skill tags: curated slugs from `lib/tags.ts`, de-duplicated and
+ * capped. Defaults to none, so existing clients keep working unchanged.
+ */
+export const jobTagsSchema = z
+  .array(
+    z
+      .string()
+      .refine(isSkillTag, `Tags must be one of: ${SKILL_TAG_SLUGS.join(", ")}`),
+  )
+  .max(MAX_JOB_TAGS)
+  .default([])
+  .transform((tags) => [...new Set(tags)]);
+
 export const createJobSchema = z.object({
   title: z.string().min(3).max(120),
   description: z.string().min(10),
@@ -37,6 +51,8 @@ export const createJobSchema = z.object({
   expiresAt: z.string().datetime().optional(),
   /** Asset symbol the job pays in; must be in the registry. Defaults to USDC. */
   asset: z.string().default("USDC"),
+  /** Curated skill tags describing the work (issue #70). */
+  tags: jobTagsSchema,
 });
 
 export const assignJobSchema = z.object({

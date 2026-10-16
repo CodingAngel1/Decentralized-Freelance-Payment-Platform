@@ -7,11 +7,13 @@ import { config } from "./config";
 import { isAllowedOrigin, parseList } from "./lib/access";
 import { jsonReplacer } from "./lib/json";
 import { errorHandler } from "./middleware/errorHandler";
+import { notFoundHandler } from "./middleware/notFound";
 import { usersRouter } from "./routes/users";
 import { jobsRouter } from "./routes/jobs";
 import { escrowRouter } from "./routes/escrow";
 import { disputesRouter } from "./routes/disputes";
 import { reputationRouter } from "./routes/reputation";
+import { notificationsRouter } from "./routes/notifications";
 
 export function createApp() {
   const app = express();
@@ -54,6 +56,11 @@ export function createApp() {
   app.use("/api/escrow", escrowRouter);
   app.use("/api/disputes", disputesRouter);
   app.use("/api/reputation", reputationRouter);
+  app.use("/api/notifications", notificationsRouter);
+
+  // Unmatched paths fall through to Express's built-in final handler, which
+  // answers HTML — unlike every route above. Answer them as JSON instead.
+  app.use(notFoundHandler);
 
   app.use(errorHandler);
 

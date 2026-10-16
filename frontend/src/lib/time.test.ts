@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatDeadline, formatRemaining, secondsUntil } from "./time";
+import {
+  formatDate,
+  formatDateTime,
+  formatDeadline,
+  formatRemaining,
+  secondsUntil,
+} from "./time";
 
 describe("secondsUntil", () => {
   it("counts down to the deadline in whole seconds", () => {
@@ -28,5 +34,20 @@ describe("formatDeadline", () => {
   it("renders the deadline as a wall-clock time", () => {
     // `toLocaleString` output is locale/zone dependent, so assert on the year.
     expect(formatDeadline(1_700_000_000n)).toMatch(/2023/);
+  });
+});
+
+describe("formatDate", () => {
+  it("renders an ISO timestamp as a locale date", () => {
+    // Locale/zone dependent, so compare against the same formatter the app uses.
+    const iso = "2026-01-03T00:00:00.000Z";
+    expect(formatDate(iso)).toBe(new Date(iso).toLocaleDateString());
+  });
+});
+
+describe("formatDateTime", () => {
+  it("renders an ISO timestamp as a locale date and time", () => {
+    const iso = "2026-02-02T12:00:00.000Z";
+    expect(formatDateTime(iso)).toBe(new Date(iso).toLocaleString());
   });
 });

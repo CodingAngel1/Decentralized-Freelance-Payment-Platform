@@ -14,6 +14,9 @@ const schema = z.object({
   USDC_CONTRACT_ID: z.string().default(""),
   XLM_CONTRACT_ID: z.string().default(""),
   INDEXER_POLL_INTERVAL_MS: z.coerce.number().default(5000),
+  // How far ahead a milestone deadline counts as "due soon" for the in-app
+  // reminders (issue #74). A per-request `?withinHours=` overrides it.
+  REMINDER_HORIZON_HOURS: z.coerce.number().default(48),
   // Comma-separated Stellar addresses that may resolve disputes through the
   // API. Empty means "nobody", not "everybody": the route fails closed.
   ARBITRATOR_ADDRESSES: z.string().default(""),

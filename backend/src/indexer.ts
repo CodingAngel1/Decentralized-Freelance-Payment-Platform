@@ -13,7 +13,8 @@
  *
  * Events handled (see docs/EVENTS.md):
  *   escrow     — created, funded, milestones_updated, milestone_released,
- *                dispute_opened, resolved, refunded
+ *                dispute_opened, resolved, refunded,
+ *                dispute_contract_updated (recognized; no job state to update)
  *   dispute    — raised, approved, dispute_resolved
  *   reputation — rated
  *
@@ -33,6 +34,10 @@
  *     `REFUNDED` and `RESOLVED` are the two terminal dispute states.
  *
  * Contributor Notes:
+ * - Every recognised event is also stored verbatim in ChainEvent (issue #72) so
+ *   a per-user history and an escrow receipt can link to the transaction that
+ *   emitted it; the state handlers below are unaffected by that write, which is
+ *   best-effort.
  * - The cursor (last scanned ledger) is persisted in IndexerCursor, so the
  *   indexer resumes after a restart and does not reprocess applied ledgers.
  * - Unknown events are ignored; a failed event is logged and recorded in
@@ -44,12 +49,11 @@
  */
 
 import { SorobanRpc } from "@stellar/stellar-sdk";
-import type { DisputeStatus, JobStatus } from "@prisma/client";
+import type { DisputeStatus, JobStatus, NotificationType } from "@prisma/client";
 import { config } from "./config";
 import { prisma } from "./db";
 import {
   KNOWN_EVENTS,
-  decodeEventData,
   decodeEventFields,
   decodeEventName,
   type ContractEventLike,
@@ -338,6 +342,20 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
   if (!name || !KNOWN_EVENTS.has(name)) return; // unknown events are ignored
 
   const data = decodeEventFields(event, EVENT_TOPIC_FIELDS[name] ?? []);
+
+  // Record the event itself (issue #72). Best-effort: history is derived data,
+  // and a failure to store it must not stop the state mirror below from being
+  // updated — a dropped history row is recoverable by replaying the event,
+  // whereas a skipped state change is what the dead-letter table exists for.
+  try {
+    const row = buildChainEvent(event, name, data);
+    if (row) {
+      await prisma.chainEvent.upsert({ where: { id: row.id }, create: row, update: {} });
+    }
+  } catch (err) {
+    console.error(`[indexer] could not record event ${event.id ?? "?"} in the history`, err);
+  }
+
   switch (name) {
     case "created":
       await handleCreated(data);
@@ -365,7 +383,10 @@ async function dispatchEvent(event: ContractEventLike): Promise<void> {
       await handleRated(data);
       break;
     default:
-      // milestones_updated / approved do not change indexed job state.
+      // milestones_updated / approved / dispute_contract_updated do not
+      // change indexed job state — dispute_contract_updated is an admin
+      // contract-config rotation (audited on-chain via getEvents), and no
+      // Job row is affected by it.
       break;
   }
 }
@@ -386,6 +407,40 @@ function asAddress(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+async function notifyParticipants(
+  escrowId: bigint,
+  type: NotificationType,
+  title: string,
+  message: string,
+  jobStore?: { findUnique(args: { where: { escrowId: bigint } }): Promise<unknown> },
+): Promise<void> {
+  try {
+    const finder = jobStore ?? prisma.job;
+    const rawJob = await finder.findUnique({
+      where: { escrowId },
+    });
+    if (!rawJob || typeof rawJob !== "object") return;
+    const job = rawJob as { id: string; clientId?: string; freelancerId?: string | null };
+    const recipients = [job.clientId, job.freelancerId].filter((id): id is string => Boolean(id));
+    if (recipients.length === 0) return;
+    await Promise.all(
+      recipients.map((userId) =>
+        prisma.notification?.create({
+          data: {
+            userId,
+            jobId: job.id,
+            type,
+            title,
+            message,
+          },
+        }),
+      ),
+    );
+  } catch {
+    // Gracefully ignore notification failure if database is unavailable or mocked
+  }
+}
+
 async function handleCreated(data: Record<string, unknown>): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
@@ -396,6 +451,7 @@ async function handleFunded(data: Record<string, unknown>): Promise<void> {
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
   await prisma.job.updateMany({ where: { escrowId }, data: { status: "ACTIVE" } });
+  await notifyParticipants(escrowId, "FUNDED", "Escrow Funded", "Escrow has been funded.");
 }
 
 async function handleMilestoneReleased(data: Record<string, unknown>): Promise<void> {
@@ -423,6 +479,13 @@ async function handleMilestoneReleased(data: Record<string, unknown>): Promise<v
   if (allReleased) {
     await prisma.job.update({ where: { id: job.id }, data: { status: "COMPLETED" } });
   }
+
+  await notifyParticipants(
+    escrowId,
+    "RELEASED",
+    "Milestone Released",
+    `Milestone ${index + 1} for job "${job.title}" has been released.`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +546,13 @@ export async function handleDisputeOpened(
   const escrowId = asBigInt(data.escrow_id);
   if (escrowId === null) return;
   await db.job.updateMany({ where: { escrowId }, data: { status: "DISPUTED" } });
+  await notifyParticipants(
+    escrowId,
+    "DISPUTED",
+    "Dispute Opened",
+    "A dispute has been opened for the job.",
+    db.job,
+  );
 }
 
 async function handleResolved(data: Record<string, unknown>): Promise<void> {
@@ -493,6 +563,7 @@ async function handleResolved(data: Record<string, unknown>): Promise<void> {
     where: { job: { escrowId } },
     data: { status: "RESOLVED", resolvedAt: new Date() },
   });
+  await notifyParticipants(escrowId, "RESOLVED", "Dispute Resolved", "The dispute has been resolved.");
 }
 
 /**
