@@ -12,8 +12,111 @@
   --text: #1f2933;
   --muted: #6b7280;
   --accent: #2563eb;
+  --accent-hover: #1d4ed8;
   --danger: #b42318;
   --radius: 8px;
+
+  /* Alerts */
+  --alert-error-bg: #fdecea;
+  --alert-error-border: #f4c7c3;
+  --alert-error-text: #b42318;
+
+  /* Badges */
+  --badge-created-bg: #eef2f6;
+  --badge-created-text: #475569;
+  --badge-created-border: #cbd5e1;
+
+  --badge-active-bg: #e7f5ec;
+  --badge-active-text: #146c2e;
+  --badge-active-border: #b7e0c4;
+
+  --badge-completed-bg: #e6f0fd;
+  --badge-completed-text: #1d4ed8;
+  --badge-completed-border: #bcd4f6;
+
+  --badge-disputed-bg: #fdecea;
+  --badge-disputed-text: #b42318;
+  --badge-disputed-border: #f4c7c3;
+
+  --badge-refunded-bg: #fdf5e6;
+  --badge-refunded-text: #92610a;
+  --badge-refunded-border: #f0dca8;
+}
+
+[data-theme="dark"] {
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --border: #334155;
+  --text: #f8fafc;
+  --muted: #94a3b8;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --danger: #f87171;
+
+  /* Alerts */
+  --alert-error-bg: #450a0a;
+  --alert-error-border: #7f1d1d;
+  --alert-error-text: #fca5a5;
+
+  /* Badges */
+  --badge-created-bg: #1e293b;
+  --badge-created-text: #94a3b8;
+  --badge-created-border: #475569;
+
+  --badge-active-bg: #064e3b;
+  --badge-active-text: #6ee7b7;
+  --badge-active-border: #047857;
+
+  --badge-completed-bg: #1e3a8a;
+  --badge-completed-text: #93c5fd;
+  --badge-completed-border: #1d4ed8;
+
+  --badge-disputed-bg: #450a0a;
+  --badge-disputed-text: #fca5a5;
+  --badge-disputed-border: #991b1b;
+
+  --badge-refunded-bg: #451a03;
+  --badge-refunded-text: #fcd34d;
+  --badge-refunded-border: #b45309;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --border: #334155;
+    --text: #f8fafc;
+    --muted: #94a3b8;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --danger: #f87171;
+
+    /* Alerts */
+    --alert-error-bg: #450a0a;
+    --alert-error-border: #7f1d1d;
+    --alert-error-text: #fca5a5;
+
+    /* Badges */
+    --badge-created-bg: #1e293b;
+    --badge-created-text: #94a3b8;
+    --badge-created-border: #475569;
+
+    --badge-active-bg: #064e3b;
+    --badge-active-text: #6ee7b7;
+    --badge-active-border: #047857;
+
+    --badge-completed-bg: #1e3a8a;
+    --badge-completed-text: #93c5fd;
+    --badge-completed-border: #1d4ed8;
+
+    --badge-disputed-bg: #450a0a;
+    --badge-disputed-text: #fca5a5;
+    --badge-disputed-border: #991b1b;
+
+    --badge-refunded-bg: #451a03;
+    --badge-refunded-text: #fcd34d;
+    --badge-refunded-border: #b45309;
+  }
 }
 
 * {
@@ -26,6 +129,7 @@ body {
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   line-height: 1.5;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 /* --- Layout ------------------------------------------------------------- */
@@ -61,6 +165,14 @@ body {
 
 .muted {
   color: var(--muted);
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  margin-right: 0.5rem;
 }
 
 /* --- Controls ----------------------------------------------------------- */
@@ -121,12 +233,13 @@ fieldset {
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--surface);
+  color: var(--text);
 }
 
 .alert-error {
-  border-color: #f4c7c3;
-  background: #fdecea;
-  color: var(--danger);
+  border-color: var(--alert-error-border);
+  background: var(--alert-error-bg);
+  color: var(--alert-error-text);
 }
 
 .card {
@@ -148,39 +261,39 @@ fieldset {
 }
 
 .badge-created {
-  background: #eef2f6;
-  color: #475569;
-  border-color: #cbd5e1;
+  background: var(--badge-created-bg);
+  color: var(--badge-created-text);
+  border-color: var(--badge-created-border);
 }
 
 .badge-active {
-  background: #e7f5ec;
-  color: #146c2e;
-  border-color: #b7e0c4;
+  background: var(--badge-active-bg);
+  color: var(--badge-active-text);
+  border-color: var(--badge-active-border);
 }
 
 .badge-completed {
-  background: #e6f0fd;
-  color: #1d4ed8;
-  border-color: #bcd4f6;
+  background: var(--badge-completed-bg);
+  color: var(--badge-completed-text);
+  border-color: var(--badge-completed-border);
 }
 
 .badge-disputed {
-  background: #fdecea;
-  color: #b42318;
-  border-color: #f4c7c3;
+  background: var(--badge-disputed-bg);
+  color: var(--badge-disputed-text);
+  border-color: var(--badge-disputed-border);
 }
 
 .badge-refunded {
-  background: #fdf5e6;
-  color: #92610a;
-  border-color: #f0dca8;
+  background: var(--badge-refunded-bg);
+  color: var(--badge-refunded-text);
+  border-color: var(--badge-refunded-border);
 }
 
 .badge-unknown {
-  background: #eef2f6;
-  color: #475569;
-  border-color: #cbd5e1;
+  background: var(--badge-created-bg);
+  color: var(--badge-created-text);
+  border-color: var(--badge-created-border);
 }
 
 /* --- Jobs list ---------------------------------------------------------- */
