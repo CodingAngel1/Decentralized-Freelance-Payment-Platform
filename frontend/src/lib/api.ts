@@ -16,6 +16,8 @@ export interface JobListQuery {
   status?: string;
   client?: string;
   freelancer?: string;
+  q?: string;
+  sort?: string;
   page?: number;
   limit?: number;
 }
@@ -26,6 +28,8 @@ export function buildJobsQuery(query: JobListQuery = {}): string {
   if (query.status) params.set("status", query.status);
   if (query.client) params.set("client", query.client);
   if (query.freelancer) params.set("freelancer", query.freelancer);
+  if (query.q) params.set("q", query.q);
+  if (query.sort) params.set("sort", query.sort);
   if (query.page !== undefined) params.set("page", String(query.page));
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   const qs = params.toString();

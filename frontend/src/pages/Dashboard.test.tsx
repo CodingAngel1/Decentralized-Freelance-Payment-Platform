@@ -210,6 +210,38 @@ describe("Dashboard job list", () => {
     expect(signal.aborted).toBe(true);
   });
 
+  it("filters jobs by search query and sort option", async () => {
+    render(<Dashboard />);
+    await screen.findByText("No jobs found.");
+
+    fireEvent.change(screen.getByLabelText(/Search jobs/), {
+      target: { value: "redesign" },
+    });
+
+    await waitFor(() => {
+      expect(lastQuery()).toEqual({
+        status: undefined,
+        page: 1,
+        limit: 10,
+        q: "redesign",
+      });
+    });
+
+    fireEvent.change(screen.getByLabelText(/Sort by/), {
+      target: { value: "amount_desc" },
+    });
+
+    await waitFor(() => {
+      expect(lastQuery()).toEqual({
+        status: undefined,
+        page: 1,
+        limit: 10,
+        q: "redesign",
+        sort: "amount_desc",
+      });
+    });
+  });
+
   it("does not report a superseded request as an error", async () => {
     h.fetchJobs.mockRejectedValue(
       new DOMException("The operation was aborted.", "AbortError"),

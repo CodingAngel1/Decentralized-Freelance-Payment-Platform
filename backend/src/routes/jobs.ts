@@ -28,15 +28,50 @@ export const jobsRouter = Router();
 // GET /api/jobs
 jobsRouter.get("/", async (req, res, next) => {
   try {
-    const { status, client, freelancer, page = "1", limit = "20" } = req.query;
+    const { status, client, freelancer, q, sort, page = "1", limit = "20" } = req.query;
+
+    const searchFilter =
+      q && typeof q === "string" && q.trim().length > 0
+        ? {
+            OR: [
+              { title: { contains: q.trim(), mode: "insensitive" as const } },
+              { description: { contains: q.trim(), mode: "insensitive" as const } },
+            ],
+          }
+        : {};
+
+    let orderBy: Record<string, "asc" | "desc"> = { createdAt: "desc" };
+    if (sort === "oldest" || sort === "created_asc" || sort === "createdAt:asc") {
+      orderBy = { createdAt: "asc" };
+    } else if (
+      sort === "amount_desc" ||
+      sort === "highest_amount" ||
+      sort === "totalAmountUsdc:desc"
+    ) {
+      orderBy = { totalAmountUsdc: "desc" };
+    } else if (
+      sort === "amount_asc" ||
+      sort === "lowest_amount" ||
+      sort === "totalAmountUsdc:asc"
+    ) {
+      orderBy = { totalAmountUsdc: "asc" };
+    } else if (
+      sort === "newest" ||
+      sort === "created_desc" ||
+      sort === "createdAt:desc"
+    ) {
+      orderBy = { createdAt: "desc" };
+    }
+
     const jobs = await prisma.job.findMany({
       where: {
         ...(status ? { status: String(status) as any } : {}),
         ...(client ? { client: { stellarAddress: String(client) } } : {}),
         ...(freelancer ? { freelancer: { stellarAddress: String(freelancer) } } : {}),
+        ...searchFilter,
       },
       include: { milestones: true, client: true, freelancer: true },
-      orderBy: { createdAt: "desc" },
+      orderBy,
       skip: (Number(page) - 1) * Number(limit),
       take: Number(limit),
     });

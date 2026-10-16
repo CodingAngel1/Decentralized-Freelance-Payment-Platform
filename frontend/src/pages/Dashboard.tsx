@@ -22,6 +22,8 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   const [status, setStatus] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sort, setSort] = useState("");
   const [jobs, setJobs] = useState<JobApi[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
@@ -34,7 +36,13 @@ export default function Dashboard() {
       setJobsError(null);
       try {
         const data = await fetchJobs(
-          { status: status || undefined, page: pageToLoad, limit: PAGE_SIZE },
+          {
+            status: status || undefined,
+            page: pageToLoad,
+            limit: PAGE_SIZE,
+            ...(searchQuery.trim() ? { q: searchQuery.trim() } : {}),
+            ...(sort ? { sort } : {}),
+          },
           signal,
         );
         setJobs((prev) => (append ? [...prev, ...data] : data));
@@ -48,7 +56,7 @@ export default function Dashboard() {
         setJobsLoading(false);
       }
     },
-    [status],
+    [status, searchQuery, sort],
   );
 
   useEffect(() => {
@@ -101,17 +109,38 @@ export default function Dashboard() {
 
       <h2>All jobs</h2>
 
-      <label>
-        Filter by status{" "}
-        <select value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="">All</option>
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", alignItems: "center", margin: "1rem 0" }}>
+        <label>
+          Search jobs{" "}
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search keyword…"
+          />
+        </label>
+
+        <label>
+          Filter by status{" "}
+          <select value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="">All</option>
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Sort by{" "}
+          <select value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option value="">Newest first (default)</option>
+            <option value="oldest">Oldest first</option>
+            <option value="amount_desc">Highest amount</option>
+            <option value="amount_asc">Lowest amount</option>
+          </select>
+        </label>
+      </div>
 
       {jobsError && (
         <p role="alert" className="alert alert-error">
