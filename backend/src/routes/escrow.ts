@@ -23,6 +23,7 @@ import {
   SorobanRpc,
   TransactionBuilder,
   BASE_FEE,
+  xdr,
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
 import { buildCreateArgs, buildUpdateMilestonesArgs } from "../lib/escrowArgs";
@@ -46,7 +47,7 @@ const server = new SorobanRpc.Server(config.SOROBAN_RPC_URL);
 const networkPassphrase =
   config.STELLAR_NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 
-async function buildTx(sourceAddress: string, operation: any): Promise<string> {
+async function buildTx(sourceAddress: string, operation: xdr.Operation): Promise<string> {
   const account = await server.getAccount(sourceAddress);
   const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase })
     .addOperation(operation)
