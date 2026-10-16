@@ -35,6 +35,11 @@ import { isSkillTag, SKILL_TAGS, SKILL_TAG_SLUGS } from "../lib/tags";
 export const jobsRouter = Router();
 
 // GET /api/jobs
+//
+// The query string is parsed with `listJobsQuerySchema` before it reaches
+// Prisma: an unknown `status` used to throw inside Prisma (a 500 rather than a
+// 400), a non-numeric `page`/`limit` became `NaN` in `skip`/`take`, and `limit`
+// was unbounded.
 jobsRouter.get("/", async (req, res, next) => {
   try {
     const { status, client, freelancer, tag, page = "1", limit = "20" } = req.query;
@@ -61,8 +66,8 @@ jobsRouter.get("/", async (req, res, next) => {
       },
       include: { milestones: true, client: true, freelancer: true },
       orderBy: { createdAt: "desc" },
-      skip: (Number(page) - 1) * Number(limit),
-      take: Number(limit),
+      skip: (page - 1) * limit,
+      take: limit,
     });
     res.json(jobs);
   } catch (err) {

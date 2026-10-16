@@ -1,9 +1,9 @@
 /**
  * schemas.ts
  *
- * Request schemas for the job-creation API, extracted from the route file so
- * the validation rules are unit testable without a database, config or a
- * running server (see `__tests__/app.test.ts`).
+ * Request schemas for the jobs API, extracted from the route file so the
+ * validation rules are unit testable without a database, config or a running
+ * server (see `__tests__/app.test.ts`).
  */
 
 import { z } from "zod";

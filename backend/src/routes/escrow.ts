@@ -383,11 +383,22 @@ const syncSchema = z.object({ escrowId: escrowIdSchema });
 
 escrowRouter.post("/sync/:jobId", requireAuth, validate(syncSchema), async (req, res, next) => {
   try {
-    const job = await prisma.job.update({
+    const { escrowId } = req.body as z.infer<typeof syncSchema>;
+
+    const job = await prisma.job.findUnique({
       where: { id: req.params.jobId },
-      data: { escrowId: BigInt(req.body.escrowId), status: "FUNDED" },
+      include: { client: true },
     });
-    res.json(job);
+    if (!job) throw new AppError(404, "Job not found");
+    if (job.client.stellarAddress !== res.locals.stellarAddress) {
+      throw new AppError(403, "Only the job's client can link its escrow");
+    }
+
+    const updated = await prisma.job.update({
+      where: { id: job.id },
+      data: { escrowId: BigInt(escrowId), status: "FUNDED" },
+    });
+    res.json(updated);
   } catch (err) {
     next(err);
   }
