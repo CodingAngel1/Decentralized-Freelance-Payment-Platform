@@ -326,16 +326,40 @@ escrowRouter.post(
   },
 );
 
-// POST /api/escrow/sync/:jobId — called by frontend after tx confirmed
-const syncSchema = z.object({ escrowId: z.number() });
+// POST /api/escrow/sync/:jobId — called by the client after tx confirmed
+//
+// Links the on-chain escrow id to the job row once `escrow.create` has been
+// confirmed. Two things were unchecked: the caller was never compared against
+// the job's client, so any authenticated user could overwrite *another* job's
+// `escrowId` and `status`; and `escrowId` was a bare `z.number()`, which
+// accepts negatives and floats even though `create` returns a `u64`. Both are
+// fixed here — the ownership check mirrors `loadEditableJob`, and the schema
+// requires a positive integer. The `.lte(MAX_SAFE_INTEGER)` guard matters
+// because the id is converted with `BigInt(...)`: a JSON number above 2^53 is
+// not exactly representable, so without it the stored id could silently differ
+// from the one the client sent.
+const syncSchema = z.object({
+  escrowId: z.number().int().positive().lte(Number.MAX_SAFE_INTEGER),
+});
 
 escrowRouter.post("/sync/:jobId", requireAuth, validate(syncSchema), async (req, res, next) => {
   try {
-    const job = await prisma.job.update({
+    const { escrowId } = req.body as z.infer<typeof syncSchema>;
+
+    const job = await prisma.job.findUnique({
       where: { id: req.params.jobId },
-      data: { escrowId: BigInt(req.body.escrowId), status: "FUNDED" },
+      include: { client: true },
     });
-    res.json(job);
+    if (!job) throw new AppError(404, "Job not found");
+    if (job.client.stellarAddress !== res.locals.stellarAddress) {
+      throw new AppError(403, "Only the job's client can link its escrow");
+    }
+
+    const updated = await prisma.job.update({
+      where: { id: job.id },
+      data: { escrowId: BigInt(escrowId), status: "FUNDED" },
+    });
+    res.json(updated);
   } catch (err) {
     next(err);
   }
